@@ -1,0 +1,267 @@
+:root[data-theme='light'] {
+    --color-bg-app: #f3f6fb;
+    --color-bg-surface: #ffffff;
+    --color-bg-elevated: #f8fafc;
+    --color-bg-sidebar: #0f172a;
+    --color-bg-sidebar-item: #1e293b;
+
+    --color-border: #d9e2ec;
+    --color-border-strong: #bcccdc;
+
+    --color-text: #10213a;
+    --color-text-muted: #5f7491;
+    --color-text-inverse: #edf4ff;
+    --color-text-sidebar: #edf4ff;
+
+    --color-primary: #0ea56b;
+    --color-primary-hover: #0a8c5a;
+    --color-topbar-accent: #0ea56b;
+    --color-success: #0ea56b;
+    --color-warning: #d97706;
+    --color-danger: #dc2626;
+    --color-focus-ring: rgb(14 165 107 / 0.28);
+
+    --theme-bg-image: none;
+    --theme-bg-image-opacity: 0.32;
+    --theme-bg-blur: 0px;
+    --theme-bg-overlay: linear-gradient(160deg, rgb(243 246 251 / 0.24), rgb(243 246 251 / 0.58));
+
+    --app-shell-background: color-mix(in srgb, var(--color-bg-app) 92%, transparent);
+    --pos-shell-background: linear-gradient(
+        145deg,
+        color-mix(in srgb, var(--color-bg-app) 88%, transparent),
+        color-mix(in srgb, var(--color-bg-app) 78%, var(--color-bg-elevated))
+    );
+}
+
+:root[data-theme='dark'] {
+    --color-bg-app: #0b1220;
+    --color-bg-surface: #111a2b;
+    --color-bg-elevated: #162235;
+    --color-bg-sidebar: #080e18;
+    --color-bg-sidebar-item: #152235;
+
+    --color-border: #22314a;
+    --color-border-strong: #31415c;
+
+    --color-text: #edf4ff;
+    --color-text-muted: #9fb0c7;
+    --color-text-inverse: #0b1220;
+    --color-text-sidebar: #dbe8fa;
+
+    --color-primary: #22c983;
+    --color-primary-hover: #18b673;
+    --color-topbar-accent: #22c983;
+    --color-success: #22c983;
+    --color-warning: #f59e0b;
+    --color-danger: #f87171;
+    --color-focus-ring: rgb(34 201 131 / 0.32);
+
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.28);
+    --shadow-md: 0 12px 32px rgb(0 0 0 / 0.35);
+    --shadow-lg: 0 24px 48px rgb(0 0 0 / 0.45);
+
+    --theme-bg-image: none;
+    --theme-bg-image-opacity: 0.6;
+    --theme-bg-blur: 10px;
+    --theme-bg-overlay: linear-gradient(130deg, rgb(6 10 18 / 0.48), rgb(4 8 16 / 0.72));
+
+    --app-shell-background: color-mix(in srgb, var(--color-bg-app) 74%, transparent);
+    --pos-shell-background: linear-gradient(
+        145deg,
+        color-mix(in srgb, var(--color-bg-app) 72%, transparent),
+        color-mix(in srgb, var(--color-bg-elevated) 74%, transparent)
+    );
+}
+
+:root[data-theme-palette='salesforce-signature'] {
+    --color-topbar-accent: #22c983;
+}
+
+:root[data-theme-palette='ocean-tech'] {
+    --color-primary: #1f86f1;
+    --color-primary-hover: #156ecb;
+    --color-topbar-accent: #3e9cff;
+    --color-focus-ring: rgb(31 134 241 / 0.32);
+}
+
+:root[data-theme-palette='emerald-corporate'] {
+    --color-primary: #1daa72;
+    --color-primary-hover: #17895b;
+    --color-topbar-accent: #26be83;
+    --color-focus-ring: rgb(29 170 114 / 0.32);
+}
+
+:root[data-theme-palette='graphite-clean'] {
+    --color-primary: #9d73ff;
+    --color-primary-hover: #8159e6;
+    --color-topbar-accent: #b08dff;
+    --color-focus-ring: rgb(157 115 255 / 0.32);
+}
+
+:root[data-theme-palette='sunset-luxe'] {
+    --color-primary: #d87756;
+    --color-primary-hover: #bf6547;
+    --color-topbar-accent: #ef8c67;
+    --color-focus-ring: rgb(208 108 77 / 0.32);
+}
+
+:root[data-theme-palette='nordic-ice'] {
+    --color-primary: #3d96eb;
+    --color-primary-hover: #2c7fca;
+    --color-topbar-accent: #59a8f1;
+    --color-focus-ring: rgb(61 150 235 / 0.32);
+}
+
+:root[data-theme-palette='ruby-noir'] {
+    --color-primary: #cc5170;
+    --color-primary-hover: #b1425e;
+    --color-topbar-accent: #e46a84;
+    --color-focus-ring: rgb(194 71 98 / 0.32);
+}
+
+:root[data-theme-palette='amber-industrial'] {
+    --color-primary: #d49b40;
+    --color-primary-hover: #ba8533;
+    --color-topbar-accent: #ffc15f;
+    --color-focus-ring: rgb(197 140 49 / 0.32);
+}
+
+:root[data-theme-palette='cyber-lime'] {
+    --color-primary: #7eb234;
+    --color-primary-hover: #668f2a;
+    --color-topbar-accent: #99cc4b;
+    --color-focus-ring: rgb(126 178 52 / 0.32);
+}
+
+:root[data-theme-palette='royal-indigo'] {
+    --color-primary: #5e6af2;
+    --color-primary-hover: #4a56d1;
+    --color-topbar-accent: #7c87ff;
+    --color-focus-ring: rgb(94 106 242 / 0.32);
+}
+
+:root[data-theme-palette='terracotta-modern'] {
+    --color-primary: #c18057;
+    --color-primary-hover: #a96d49;
+    --color-topbar-accent: #d8946b;
+    --color-focus-ring: rgb(182 116 76 / 0.32);
+}
+
+:root[data-theme-palette='mint-frost'] {
+    --color-primary: #2aa995;
+    --color-primary-hover: #218b7a;
+    --color-topbar-accent: #42c0ab;
+    --color-focus-ring: rgb(42 169 149 / 0.32);
+}
+
+:root[data-theme-palette='mono-cobalt'] {
+    --color-primary: #3f76d8;
+    --color-primary-hover: #335fb0;
+    --color-topbar-accent: #5b8ae0;
+    --color-focus-ring: rgb(63 118 216 / 0.32);
+}
+
+:root[data-theme='dark'][data-theme-palette='salesforce-signature'] {
+    --theme-bg-image: url('/salesforcebackground/salesforcesignature_dark.png');
+}
+
+:root[data-theme='light'][data-theme-palette='salesforce-signature'] {
+    --theme-bg-image: url('/salesforcebackground/salesforcesignature_light.png');
+}
+
+:root[data-theme='dark'][data-theme-palette='ocean-tech'] {
+    --theme-bg-image: url('/salesforcebackground/oceantech_dark.png');
+}
+
+:root[data-theme='light'][data-theme-palette='ocean-tech'] {
+    --theme-bg-image: url('/salesforcebackground/oceantech_light.png');
+}
+
+:root[data-theme='dark'][data-theme-palette='emerald-corporate'] {
+    --theme-bg-image: url('/salesforcebackground/emeraldcorporate_dark.png');
+}
+
+:root[data-theme='light'][data-theme-palette='emerald-corporate'] {
+    --theme-bg-image: url('/salesforcebackground/emeraldcorporate_light.png');
+}
+
+:root[data-theme='dark'][data-theme-palette='graphite-clean'] {
+    --theme-bg-image: url('/salesforcebackground/graphiteclean_dark.png');
+}
+
+:root[data-theme='light'][data-theme-palette='graphite-clean'] {
+    --theme-bg-image: url('/salesforcebackground/graphiteclean_light.png');
+}
+
+:root[data-theme='dark'][data-theme-palette='sunset-luxe'] {
+    --theme-bg-image: url('/salesforcebackground/sunsetluxe_dark.png');
+}
+
+:root[data-theme='light'][data-theme-palette='sunset-luxe'] {
+    --theme-bg-image: url('/salesforcebackground/sunsetluxe_light.png');
+}
+
+:root[data-theme='dark'][data-theme-palette='nordic-ice'] {
+    --theme-bg-image: url('/salesforcebackground/nordicice_dark.png');
+}
+
+:root[data-theme='light'][data-theme-palette='nordic-ice'] {
+    --theme-bg-image: url('/salesforcebackground/nordicice_light.png');
+}
+
+:root[data-theme='dark'][data-theme-palette='ruby-noir'] {
+    --theme-bg-image: url('/salesforcebackground/rubynoir_dark.png');
+}
+
+:root[data-theme='light'][data-theme-palette='ruby-noir'] {
+    --theme-bg-image: url('/salesforcebackground/rubynoir_light.png');
+}
+
+:root[data-theme='dark'][data-theme-palette='amber-industrial'] {
+    --theme-bg-image: url('/salesforcebackground/amberindustrial_dark.png');
+}
+
+:root[data-theme='light'][data-theme-palette='amber-industrial'] {
+    --theme-bg-image: url('/salesforcebackground/amberindustrial_light.png');
+}
+
+:root[data-theme='dark'][data-theme-palette='cyber-lime'] {
+    --theme-bg-image: url('/salesforcebackground/cyberlime_dark.png');
+}
+
+:root[data-theme='light'][data-theme-palette='cyber-lime'] {
+    --theme-bg-image: url('/salesforcebackground/cyberlime_light.png');
+}
+
+:root[data-theme='dark'][data-theme-palette='royal-indigo'] {
+    --theme-bg-image: url('/salesforcebackground/royalindigo_dark.png');
+}
+
+:root[data-theme='light'][data-theme-palette='royal-indigo'] {
+    --theme-bg-image: url('/salesforcebackground/royalindigo_light.png');
+}
+
+:root[data-theme='dark'][data-theme-palette='terracotta-modern'] {
+    --theme-bg-image: url('/salesforcebackground/terracotamodern_dark.png');
+}
+
+:root[data-theme='light'][data-theme-palette='terracotta-modern'] {
+    --theme-bg-image: url('/salesforcebackground/terracotamodern_light.png');
+}
+
+:root[data-theme='dark'][data-theme-palette='mint-frost'] {
+    --theme-bg-image: url('/salesforcebackground/mintfrost_dark.png');
+}
+
+:root[data-theme='light'][data-theme-palette='mint-frost'] {
+    --theme-bg-image: url('/salesforcebackground/mintfrost_light.png');
+}
+
+:root[data-theme='dark'][data-theme-palette='mono-cobalt'] {
+    --theme-bg-image: url('/salesforcebackground/cobaltmono_dark.png');
+}
+
+:root[data-theme='light'][data-theme-palette='mono-cobalt'] {
+    --theme-bg-image: url('/salesforcebackground/cobaltmono_light.png');
+}

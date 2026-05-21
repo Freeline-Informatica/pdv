@@ -1,0 +1,28 @@
+@import 'tailwindcss';
+@import '../js/styles/tokens.css';
+@import '../js/styles/themes.css';
+@import '../js/styles/utilities.css';
+
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+@source '../../storage/framework/views/*.php';
+@source '../**/*.blade.php';
+@source '../**/*.js';
+@source '../**/*.ts';
+@source '../**/*.vue';
+
+@layer base {
+    html {
+        font-family: var(--font-sans);
+    }
+
+    body {
+        @apply antialiased;
+    }
+
+    input,
+    select,
+    textarea,
+    button {
+        @apply outline-none;
+    }
+}
