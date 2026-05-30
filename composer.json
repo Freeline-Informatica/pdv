@@ -2,7 +2,7 @@
     "name": "freeline/pdv",
     "description": "Pacote Laravel do Simples PDV para uso standalone ou integrado ao ERP Freeline.",
     "type": "library",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "license": "proprietary",
     "require": {
         "php": "^8.2",
