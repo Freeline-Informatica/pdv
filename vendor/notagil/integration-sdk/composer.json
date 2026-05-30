@@ -1,0 +1,48 @@
+{
+  "name": "notagil/integration-sdk",
+  "description": "PHP SDK for the NotaAgil public integration API.",
+  "type": "library",
+  "license": "MIT",
+  "homepage": "https://github.com/sabbajohn/notagil-integration-sdk",
+  "keywords": [
+    "notagil",
+    "fiscal",
+    "nfe",
+    "nfce",
+    "nfse",
+    "sdk"
+  ],
+  "authors": [
+    {
+      "name": "Sabba Sistemas"
+    }
+  ],
+  "support": {
+    "issues": "https://github.com/sabbajohn/notagil-integration-sdk/issues",
+    "source": "https://github.com/sabbajohn/notagil-integration-sdk"
+  },
+  "require": {
+    "php": "^8.2",
+    "guzzlehttp/guzzle": "^7.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^11.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "NotaAgil\\Integration\\": "php/src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "NotaAgil\\Integration\\Tests\\": "php/tests/"
+    }
+  },
+  "scripts": {
+    "test": "bash scripts/test-switch.sh",
+    "test:php": "cd php && vendor/bin/phpunit",
+    "test:sdk": "bash scripts/test-switch.sh",
+    "test:e2e": "cd typescript && npm run test:e2e"
+  },
+  "minimum-stability": "stable"
+}
