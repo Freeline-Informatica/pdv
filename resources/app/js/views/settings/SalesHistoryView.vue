@@ -22,6 +22,9 @@ import {
 } from 'lucide-vue-next';
 import { useRoute, useRouter } from 'vue-router';
 import api from '../../lib/api';
+import { renderSaleReceiptEscPos } from '../../lib/escposReceipt';
+import { downloadFiscalArtifact, openFiscalPdf, printFiscalPdf } from '../../lib/fiscalArtifacts';
+import { useLocalPrinter } from '../../composables/useLocalPrinter';
 import SettingsPageHeader from '../../components/settings/SettingsPageHeader.vue';
 import SettingsEmptyState from '../../components/settings/SettingsEmptyState.vue';
 import SettingsFilterBar from '../../components/settings/SettingsFilterBar.vue';
@@ -41,12 +44,26 @@ const loadingDetail = ref(false);
 const sales = ref([]);
 const selectedSale = ref(null);
 const pageError = ref('');
+const fiscalActionFeedback = ref('');
+const fiscalActionError = ref('');
+const fiscalActionLoading = reactive({
+    downloadXml: false,
+    print: false,
+    printThermal: false,
+    view: false,
+});
 
 const search = ref('');
 const statusFilter = ref('todas');
 
 const nowTick = ref(Date.now());
 let timerIntervalId = null;
+
+const {
+    printer,
+    connect: connectLocalPrinter,
+    print: printLocalPayload,
+} = useLocalPrinter();
 
 const cancelModal = reactive({
     open: false,
@@ -271,6 +288,16 @@ const fiscalModel = computed(() => {
     ]), '-');
 });
 
+const fiscalDocumentLabel = computed(() => {
+    if (!selectedSale.value) return 'NFC-e';
+
+    return fallbackText(firstFilled([
+        selectedSale.value.document_label,
+        selectedSale.value?.fiscal?.document_type ? String(selectedSale.value.fiscal.document_type).toUpperCase() : null,
+        selectedSale.value.document_type ? String(selectedSale.value.document_type).toUpperCase() : null,
+    ]), 'NFC-e');
+});
+
 const fiscalStatus = computed(() => {
     if (!selectedSale.value) return 'Não informado';
 
@@ -443,8 +470,15 @@ const printReceiptUrl = computed(() => firstFilled([
     selectedSale.value?.links?.print,
 ]));
 
+const printFiscalUrl = computed(() => firstFilled([
+    selectedSale.value?.fiscal?.pdf_url,
+    selectedSale.value?.pdf_url,
+]));
+
 const viewFiscalUrl = computed(() => firstFilled([
+    selectedSale.value?.fiscal?.pdf_url,
     selectedSale.value?.fiscal?.view_url,
+    selectedSale.value?.pdf_url,
     selectedSale.value?.nfce_url,
     selectedSale.value?.links?.fiscal,
 ]));
@@ -454,6 +488,8 @@ const downloadXmlUrl = computed(() => firstFilled([
     selectedSale.value?.xml_url,
     selectedSale.value?.links?.xml,
 ]));
+
+const canUseLocalPrinter = computed(() => printer.value.browserSupported && !['connecting', 'printing'].includes(printer.value.status));
 
 function toDateKey(date) {
     const year = date.getFullYear();
@@ -579,6 +615,132 @@ function openExternalLink(url) {
     window.open(String(url), '_blank', 'noopener,noreferrer');
 }
 
+function clearFiscalActionStatus() {
+    fiscalActionFeedback.value = '';
+    fiscalActionError.value = '';
+}
+
+function buildFiscalFileBaseName() {
+    const documentType = String(selectedSale.value?.document_type || '').trim().toLowerCase() === 'nfe' ? 'nfe' : 'nfce';
+    const saleNumber = String(selectedSale.value?.numero || 'documento').trim() || 'documento';
+
+    return `${documentType}-${saleNumber}`;
+}
+
+async function handlePrintFiscal() {
+    if (!printFiscalUrl.value || fiscalActionLoading.print) return;
+
+    clearFiscalActionStatus();
+    fiscalActionLoading.print = true;
+
+    try {
+        const result = await printFiscalPdf(printFiscalUrl.value, {
+            fallbackBaseName: buildFiscalFileBaseName(),
+            successMessage: 'Impressão fiscal enviada ao navegador.',
+        });
+
+        if (result.success) {
+            fiscalActionFeedback.value = result.message;
+            return;
+        }
+
+        fiscalActionError.value = result.message || 'Não foi possível imprimir o documento fiscal.';
+    } finally {
+        fiscalActionLoading.print = false;
+    }
+}
+
+async function handlePrintThermalReceipt() {
+    if (!selectedSale.value || fiscalActionLoading.printThermal || !canUseLocalPrinter.value) return;
+
+    clearFiscalActionStatus();
+    fiscalActionLoading.printThermal = true;
+
+    try {
+        const state = printer.value.status === 'connected'
+            ? printer.value
+            : await connectLocalPrinter(printer.value.supportsSerial ? 'serial' : 'auto');
+
+        if (state.status !== 'connected') {
+            fiscalActionError.value = state.lastError || 'Não foi possível conectar a impressora térmica.';
+            return;
+        }
+
+        const payload = renderSaleReceiptEscPos({
+            receipt: {
+                id: selectedSale.value.id,
+                number: selectedSale.value.numero,
+                series: fiscalSeries.value || selectedSale.value?.fiscal?.series || '1',
+                total: selectedSale.value.total_financeiro,
+                status: selectedSale.value.status_label,
+                sold_at: selectedSale.value.sold_at,
+                fiscal: selectedSale.value.fiscal || null,
+            },
+            sale: selectedSale.value,
+            items: saleItems.value,
+            payments: salePayments.value,
+            customer: {
+                nome: selectedSale.value.cliente_nome,
+            },
+            totals: {
+                total_financeiro: selectedSale.value.total_financeiro,
+                change_total: changeTotal.value,
+            },
+        });
+
+        await printLocalPayload(payload);
+        fiscalActionFeedback.value = 'Cupom térmico enviado para a impressora.';
+    } catch (error) {
+        fiscalActionError.value = error?.message || 'Não foi possível imprimir o cupom térmico.';
+    } finally {
+        fiscalActionLoading.printThermal = false;
+    }
+}
+
+async function handleViewFiscal() {
+    if (!viewFiscalUrl.value || fiscalActionLoading.view) return;
+
+    clearFiscalActionStatus();
+    fiscalActionLoading.view = true;
+
+    try {
+        const result = await openFiscalPdf(viewFiscalUrl.value, {
+            fallbackBaseName: buildFiscalFileBaseName(),
+        });
+
+        if (!result.success) {
+            fiscalActionError.value = result.message || 'Não foi possível abrir o documento fiscal.';
+        }
+    } finally {
+        fiscalActionLoading.view = false;
+    }
+}
+
+async function handleDownloadXml() {
+    if (!downloadXmlUrl.value || fiscalActionLoading.downloadXml) return;
+
+    clearFiscalActionStatus();
+    fiscalActionLoading.downloadXml = true;
+
+    try {
+        const result = await downloadFiscalArtifact(downloadXmlUrl.value, {
+            extension: 'xml',
+            accept: 'application/xml,text/xml,*/*',
+            fallbackBaseName: buildFiscalFileBaseName(),
+            successMessage: 'XML fiscal preparado para download.',
+        });
+
+        if (result.success) {
+            fiscalActionFeedback.value = result.message;
+            return;
+        }
+
+        fiscalActionError.value = result.message || 'Não foi possível baixar o XML fiscal.';
+    } finally {
+        fiscalActionLoading.downloadXml = false;
+    }
+}
+
 function openCancelModal() {
     cancelModal.error = '';
     cancelModal.reason = '';
@@ -610,11 +772,13 @@ async function loadSales() {
 async function loadSaleDetail(saleId) {
     if (!saleId) {
         selectedSale.value = null;
+        clearFiscalActionStatus();
         return;
     }
 
     loadingDetail.value = true;
     pageError.value = '';
+    clearFiscalActionStatus();
 
     try {
         const { data } = await api.get(`/sales/${saleId}`);
@@ -1052,12 +1216,46 @@ onUnmounted(() => {
                                 Imprimir comprovante
                             </AppButton>
 
-                            <AppButton v-if="viewFiscalUrl" variant="secondary" block @click="openExternalLink(viewFiscalUrl)">
-                                <FileSearch class="h-4 w-4" aria-hidden="true" />
-                                Ver NFC-e
+                            <AppButton
+                                variant="secondary"
+                                block
+                                :disabled="!canUseLocalPrinter"
+                                :loading="fiscalActionLoading.printThermal"
+                                @click="handlePrintThermalReceipt"
+                            >
+                                <Printer class="h-4 w-4" aria-hidden="true" />
+                                Imprimir cupom térmico
                             </AppButton>
 
-                            <AppButton v-if="downloadXmlUrl" variant="secondary" block @click="openExternalLink(downloadXmlUrl)">
+                            <AppButton
+                                v-if="printFiscalUrl"
+                                variant="secondary"
+                                block
+                                :loading="fiscalActionLoading.print"
+                                @click="handlePrintFiscal"
+                            >
+                                <Printer class="h-4 w-4" aria-hidden="true" />
+                                Imprimir {{ fiscalDocumentLabel }}
+                            </AppButton>
+
+                            <AppButton
+                                v-if="viewFiscalUrl"
+                                variant="secondary"
+                                block
+                                :loading="fiscalActionLoading.view"
+                                @click="handleViewFiscal"
+                            >
+                                <FileSearch class="h-4 w-4" aria-hidden="true" />
+                                Ver {{ fiscalDocumentLabel }}
+                            </AppButton>
+
+                            <AppButton
+                                v-if="downloadXmlUrl"
+                                variant="secondary"
+                                block
+                                :loading="fiscalActionLoading.downloadXml"
+                                @click="handleDownloadXml"
+                            >
                                 <FileDown class="h-4 w-4" aria-hidden="true" />
                                 Baixar XML
                             </AppButton>
@@ -1072,6 +1270,9 @@ onUnmounted(() => {
                                 Cancelar venda
                             </AppButton>
                         </div>
+
+                        <p v-if="fiscalActionError" class="text-sm text-danger">{{ fiscalActionError }}</p>
+                        <p v-else-if="fiscalActionFeedback" class="text-sm text-success">{{ fiscalActionFeedback }}</p>
 
                         <p v-if="!cancellationMeta.canCancel" class="sale-sticky-hint">
                             {{ cancellationMeta.message }}

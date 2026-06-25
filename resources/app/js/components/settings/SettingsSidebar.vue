@@ -44,10 +44,6 @@ const props = defineProps({
         type: Boolean,
         default: false,
     },
-    exitLabel: {
-        type: String,
-        default: 'Sair',
-    },
 });
 
 const emit = defineEmits(['navigate', 'toggle', 'go-pos', 'logout']);
@@ -222,11 +218,11 @@ function isItemActive(path) {
                     <AppButton
                         variant="danger"
                         class="settings-footer-btn"
-                        :title="props.collapsed ? props.exitLabel : ''"
+                        :title="props.collapsed ? 'Sair' : ''"
                         @click="emit('logout')"
                     >
                         <LogOut class="h-4 w-4" aria-hidden="true" />
-                        <span v-if="!props.collapsed">{{ props.exitLabel }}</span>
+                        <span v-if="!props.collapsed">Sair</span>
                     </AppButton>
                 </div>
             </footer>

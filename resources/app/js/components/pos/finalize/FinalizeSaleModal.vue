@@ -1,7 +1,13 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import api from '../../../lib/api';
-import { formatCurrency, formatPercent } from '../../../lib/format';
+import { getToken } from '../../../lib/auth';
+import { base64ToBytes } from '../../../lib/base64Bytes';
+import { normalizeCupomLayout } from '../../../lib/cupomLayout';
+import { renderDanfceXmlEscPos } from '../../../lib/escposDanfceFast';
+import { printFiscalPdf } from '../../../lib/fiscalArtifacts';
+import { formatCurrency } from '../../../lib/format';
+import { useLocalPrinter } from '../../../composables/useLocalPrinter';
 import AppModal from '../../ui/AppModal.vue';
 import AppButton from '../../ui/AppButton.vue';
 import AppInput from '../../ui/AppInput.vue';
@@ -14,7 +20,6 @@ import PaymentMethodsGrid from './PaymentMethodsGrid.vue';
 import PaymentCompositionList from './PaymentCompositionList.vue';
 import FinalizationSuccessState from './FinalizationSuccessState.vue';
 import FiscalDocumentSelector from './FiscalDocumentSelector.vue';
-import { mockCustomers } from '../../../mock/customers';
 
 const props = defineProps({
     open: {
@@ -29,6 +34,10 @@ const props = defineProps({
         type: Object,
         default: null,
     },
+    emitter: {
+        type: Object,
+        default: () => ({}),
+    },
 });
 
 const emit = defineEmits(['close', 'completed', 'customer-selected']);
@@ -36,7 +45,7 @@ const emit = defineEmits(['close', 'completed', 'customer-selected']);
 const steps = [
     { id: 1, label: 'Cliente' },
     { id: 2, label: 'Pagamento' },
-    { id: 3, label: 'Finalizacao' },
+    { id: 3, label: 'Finalização' },
 ];
 
 const customerMode = ref('consumer');
@@ -82,6 +91,10 @@ const quickErrors = reactive({
 const fiscalDefaults = reactive({
     documentModel: 'NFC-e',
     documentSeries: '1',
+    nfeSeries: '1',
+    nfceSeries: '1',
+    emitirNfe: false,
+    emitirNfce: true,
 });
 
 const paymentMethods = ref([]);
@@ -97,7 +110,16 @@ const processingEmission = ref(false);
 const emissionError = ref('');
 const currentStep = ref(1);
 const successReceipt = ref(null);
-const AUTO_EMIT_DURATION_MS = 3000;
+const automaticPrintEnabled = ref(false);
+const printingFiscal = ref(false);
+const printingThermal = ref(false);
+const fiscalSyncing = ref(false);
+const autoPrintedReceiptKey = ref('');
+const pendingAutomaticThermalPrint = ref(false);
+const thermalPrintLayout = ref(normalizeCupomLayout(null));
+const thermalPrintLogoUrl = ref(null);
+const AUTO_EMIT_DURATION_MS = 12000;
+const AUTOMATIC_FISCAL_SYNC_TIMEOUT_MS = 60000;
 const autoEmitCountdownActive = ref(false);
 const autoEmitProgress = ref(0);
 const autoEmitRemainingMs = ref(AUTO_EMIT_DURATION_MS);
@@ -106,100 +128,17 @@ const autoEmitSecondsLeft = computed(() => Math.max(0, Math.ceil(autoEmitRemaini
 const consumerOptionRef = ref(null);
 let searchDebounce = null;
 let autoEmitInterval = null;
+let automaticFiscalSyncRunning = false;
+let fiscalEventSource = null;
+let fiscalEventStreamTimeout = null;
 
-const fallbackPaymentMethods = [
-    {
-        id: 'cash',
-        nome: 'Dinheiro',
-        tipo: 'dinheiro',
-        permite_troco: true,
-        permite_multiplos_pagamentos: true,
-        permite_parcelamento: false,
-        parcelas_min: 1,
-        parcelas_max: 1,
-        parcela_minima: 0,
-        sem_juros_ate: 0,
-        taxa_credito_parcelado: 0,
-    },
-    {
-        id: 'pix',
-        nome: 'PIX',
-        tipo: 'pix',
-        permite_troco: false,
-        permite_multiplos_pagamentos: true,
-        permite_parcelamento: false,
-        parcelas_min: 1,
-        parcelas_max: 1,
-        parcela_minima: 0,
-        sem_juros_ate: 0,
-        taxa_credito_parcelado: 0,
-    },
-    {
-        id: 'credit-card',
-        nome: 'Cartao de credito',
-        tipo: 'credito',
-        permite_troco: false,
-        permite_multiplos_pagamentos: true,
-        permite_parcelamento: true,
-        parcelas_min: 1,
-        parcelas_max: 12,
-        parcela_minima: 5,
-        sem_juros_ate: 3,
-        taxa_credito_parcelado: 2.99,
-    },
-    {
-        id: 'debit-card',
-        nome: 'Cartao de debito',
-        tipo: 'debito',
-        permite_troco: false,
-        permite_multiplos_pagamentos: true,
-        permite_parcelamento: false,
-        parcelas_min: 1,
-        parcelas_max: 1,
-        parcela_minima: 0,
-        sem_juros_ate: 0,
-        taxa_credito_parcelado: 0,
-    },
-    {
-        id: 'check',
-        nome: 'Cheque',
-        tipo: 'cheque',
-        permite_troco: false,
-        permite_multiplos_pagamentos: true,
-        permite_parcelamento: false,
-        parcelas_min: 1,
-        parcelas_max: 1,
-        parcela_minima: 0,
-        sem_juros_ate: 0,
-        taxa_credito_parcelado: 0,
-    },
-    {
-        id: 'store-credit',
-        nome: 'Credito da loja',
-        tipo: 'credito_loja',
-        permite_troco: false,
-        permite_multiplos_pagamentos: true,
-        permite_parcelamento: false,
-        parcelas_min: 1,
-        parcelas_max: 1,
-        parcela_minima: 0,
-        sem_juros_ate: 0,
-        taxa_credito_parcelado: 0,
-    },
-    {
-        id: 'gift-card',
-        nome: 'Vale presente',
-        tipo: 'vale_presente',
-        permite_troco: false,
-        permite_multiplos_pagamentos: true,
-        permite_parcelamento: false,
-        parcelas_min: 1,
-        parcelas_max: 1,
-        parcela_minima: 0,
-        sem_juros_ate: 0,
-        taxa_credito_parcelado: 0,
-    },
-];
+const {
+    printer,
+    connect: connectLocalPrinter,
+    disconnect: disconnectLocalPrinter,
+    print: printLocalPayload,
+    printTestPage: printLocalTestPage,
+} = useLocalPrinter();
 
 const itemsCount = computed(() => props.cart.reduce((acc, item) => acc + Number(item.qty || 0), 0));
 const productsTotal = computed(() => props.cart.reduce((acc, item) => acc + Number(item.preco_venda || 0) * Number(item.qty || 0), 0));
@@ -230,15 +169,14 @@ const availableInstallmentOptions = computed(() => {
         .sort((left, right) => Number(left.quantidade_parcelas || 0) - Number(right.quantidade_parcelas || 0))
         .map((plan) => {
             const quantity = Math.max(1, Number(plan.quantidade_parcelas || 1));
-            const interestRate = plan.possui_juros ? Number(plan.percentual_juros || 0) : 0;
 
             return {
                 id: `plan:${plan.id}`,
                 quantity,
-                interestRate,
+                interestRate: 0,
                 minInstallmentValue: Number(plan.valor_minimo_parcela || 0),
                 planId: plan.id,
-                label: `${quantity}x ${interestRate > 0 ? `com ${formatPercent(interestRate)} de juros` : 'sem juros'}`,
+                label: `${quantity}x sem juros`,
             };
         });
 
@@ -246,21 +184,18 @@ const availableInstallmentOptions = computed(() => {
 
     const minInstallments = Math.max(1, Number(method.parcelas_min || 1));
     const maxInstallments = Math.max(minInstallments, Number(method.parcelas_max || minInstallments));
-    const noInterestUntil = Math.max(0, Number(method.sem_juros_ate || 0));
-    const defaultInterestRate = Math.max(0, Number(method.taxa_credito_parcelado || 0));
     const minInstallmentValue = Math.max(0, Number(method.parcela_minima || 0));
 
     return Array.from({ length: maxInstallments - minInstallments + 1 }, (_, index) => {
         const quantity = minInstallments + index;
-        const interestRate = quantity > noInterestUntil && quantity > 1 ? defaultInterestRate : 0;
 
         return {
-            id: `manual:${quantity}`,
+            id: `lojista:${quantity}`,
             quantity,
-            interestRate,
+            interestRate: 0,
             minInstallmentValue,
             planId: null,
-            label: `${quantity}x ${interestRate > 0 ? `com ${formatPercent(interestRate)} de juros` : 'sem juros'}`,
+            label: `${quantity}x sem juros`,
         };
     });
 });
@@ -320,17 +255,22 @@ const paymentValidationMessage = computed(() => {
     if (!payments.value.length) return 'Adicione ao menos um pagamento.';
     if (remainingTotal.value > 0) return `Falta pagar ${formatCurrency(remainingTotal.value)}.`;
     if (overpaidTotal.value > 0 && !hasChangeCapableMethod.value) {
-        return 'Composicao excede o total e nao ha forma que permita troco.';
+        return 'Composição excede o total e não há forma que permita troco.';
     }
     return '';
 });
 
 const selectedDocumentLabel = computed(() => (fiscalDefaults.documentModel === 'NF-e' ? 'NF-e' : 'NFC-e'));
+const fiscalValidationMessage = computed(() => {
+    if (selectedDocumentLabel.value !== 'NF-e') return '';
+    if (hasIdentifiedFiscalCustomer(selectedCustomer.value)) return '';
+    return 'Para emitir NF-e, selecione ou cadastre um cliente com CPF/CNPJ.';
+});
 
 const statusLabel = computed(() => {
     if (successReceipt.value) return `${selectedDocumentLabel.value} emitida`;
     if (processingEmission.value) return `Emitindo ${selectedDocumentLabel.value}`;
-    if (currentStep.value === 1) return 'Cliente em selecao';
+    if (currentStep.value === 1) return 'Cliente em seleção';
     if (currentStep.value === 2) return 'Pagamento em preenchimento';
     if (!paymentValidationMessage.value) return 'Pronta para emitir';
     return 'Aguardando pagamento';
@@ -351,8 +291,48 @@ const canEmit = computed(
         currentStep.value === 3 &&
         !processingEmission.value &&
         !paymentValidationMessage.value &&
+        !fiscalValidationMessage.value &&
         validateStep1(false),
 );
+const successReceiptCanPrint = computed(() => canPrintFiscalReceipt(successReceipt.value));
+const successReceiptCanOpenPdf = computed(() => canOpenFiscalPdf(successReceipt.value));
+const successReceiptPrintHint = computed(() => {
+    if (!successReceipt.value || successReceiptCanPrint.value) return '';
+    if (isReceiptContingency(successReceipt.value)) return 'Falha de comunicação com a SEFAZ. Use retentar autorização fiscal.';
+    return 'A impressão fiscal será liberada após a autorização do documento.';
+});
+const isNetworkPrinterMode = computed(() => printer.value.mode === 'network');
+const localPrinterChannelAvailable = computed(() => isNetworkPrinterMode.value || printer.value.browserSupported);
+const localPrinterConnected = computed(() => printer.value.status === 'connected');
+const localPrinterBusy = computed(() => ['connecting', 'printing'].includes(printer.value.status));
+const thermalPrintDisabled = computed(() =>
+    !successReceipt.value || printingThermal.value || fiscalSyncing.value || localPrinterBusy.value || !localPrinterChannelAvailable.value,
+);
+const localPrinterStatusLabel = computed(() => {
+    const labels = {
+        unsupported: 'Navegador sem suporte',
+        disconnected: 'Desconectada',
+        connecting: 'Conectando',
+        connected: 'Conectada',
+        printing: 'Imprimindo',
+        error: 'Erro',
+    };
+
+    return labels[printer.value.status] || printer.value.status;
+});
+const localPrinterHint = computed(() => {
+    if (isNetworkPrinterMode.value) {
+        if (printer.value.status === 'connected') return 'Bridge conectado e pronto para receber ESC/POS.';
+        if (printer.value.status === 'error') return printer.value.lastError || 'Falha ao acessar o bridge de impressão.';
+        return 'Conecte o bridge de impressão configurado neste terminal.';
+    }
+
+    if (!printer.value.browserSupported) return 'Use Chrome ou Edge para imprimir pela serial do navegador.';
+    if (printer.value.status === 'connected') return `Canal ${printer.value.transport || 'local'} pronto para ESC/POS.`;
+    if (printer.value.status === 'error') return printer.value.lastError || 'Falha ao acessar a impressora local.';
+    if (printer.value.supportsSerial) return 'Conecte a impressora térmica pela serial antes de imprimir.';
+    return 'WebSerial indisponível; WebUSB será usado se a impressora permitir.';
+});
 
 const hasPendingChanges = computed(() => {
     if (currentStep.value > 1) return true;
@@ -479,7 +459,135 @@ function normalizeCustomer(record) {
         uf: record.uf || record.state || '',
         email: record.email || '',
         tipo_pessoa: record.tipo_pessoa || record.personType || '',
+        cep: record.cep || '',
+        logradouro: record.logradouro || record.street || '',
+        numero: record.numero || record.number || '',
+        bairro: record.bairro || record.neighborhood || '',
+        complemento: record.complemento || record.complement || '',
+        inscricao_estadual: record.inscricao_estadual || record.stateRegistration || '',
+        indicador_ie: record.indicador_ie || '9',
+        codigo_ibge: record.codigo_ibge || '',
+        pais: record.pais || record.country || 'Brasil',
     };
+}
+
+function hasIdentifiedFiscalCustomer(customer) {
+    if (!customer || String(customer.nome || '').trim() === '') return false;
+    const document = digitsOnly(
+        customer.cpf_cnpj
+        || customer.cpfCnpj
+        || customer.documento
+        || customer.document
+        || customer.cpf
+        || customer.cnpj
+        || '',
+    );
+    return [11, 14].includes(document.length);
+}
+
+function fiscalReceiptStatus(receipt) {
+    return String(receipt?.fiscal?.status || '').trim().toLowerCase();
+}
+
+function fiscalReceiptLabelStatus(receipt) {
+    return String(receipt?.status || '').trim().toLowerCase();
+}
+
+function receiptFiscalPdfUrl(receipt) {
+    const url = String(receipt?.fiscal?.pdf_url || '').trim();
+    return url || null;
+}
+
+function receiptFiscalXmlUrl(receipt) {
+    const url = String(receipt?.fiscal?.xml_url || '').trim();
+    return url || null;
+}
+
+function receiptFiscalXmlBase64(receipt) {
+    const value = String(receipt?.fiscal?.xml_base64 || '').trim();
+    return value || null;
+}
+
+function isReceiptProcessing(receipt) {
+    const status = fiscalReceiptStatus(receipt);
+    const labelStatus = fiscalReceiptLabelStatus(receipt);
+
+    return ['processing', 'pending'].includes(status) || labelStatus === 'processando emissão';
+}
+
+function isReceiptContingency(receipt) {
+    const status = fiscalReceiptStatus(receipt);
+    const labelStatus = fiscalReceiptLabelStatus(receipt);
+
+    return status === 'contingency_pending' || labelStatus === 'em contingência';
+}
+
+function isReceiptAuthorized(receipt) {
+    const status = fiscalReceiptStatus(receipt);
+    const labelStatus = fiscalReceiptLabelStatus(receipt);
+
+    return status === 'authorized' || labelStatus === 'autorizada';
+}
+
+function canPrintFiscalReceipt(receipt) {
+    return Boolean(receiptFiscalPdfUrl(receipt) || receiptFiscalXmlUrl(receipt) || receiptFiscalXmlBase64(receipt))
+        && !isReceiptProcessing(receipt)
+        && !isReceiptContingency(receipt);
+}
+
+function canPrintEmbeddedFiscalReceipt(receipt) {
+    return Boolean(receiptFiscalXmlBase64(receipt))
+        && !isReceiptProcessing(receipt)
+        && !isReceiptContingency(receipt);
+}
+
+function canOpenFiscalPdf(receipt) {
+    return Boolean(receiptFiscalPdfUrl(receipt))
+        && !isReceiptProcessing(receipt)
+        && !isReceiptContingency(receipt);
+}
+
+function fiscalDebug(receipt) {
+    return receipt?.fiscal?.debug && typeof receipt.fiscal.debug === 'object' ? receipt.fiscal.debug : null;
+}
+
+function formatDebugMs(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0) return null;
+    if (parsed < 1000) return `${Math.round(parsed)}ms`;
+    return `${(parsed / 1000).toFixed(2)}s`;
+}
+
+function fiscalDebugLabel(receipt) {
+    const debug = fiscalDebug(receipt);
+    if (!debug) return '';
+
+    const parts = [
+        ['criação', debug.create_ms],
+        ['autorização', debug.wait_authorization_ms],
+        ['artefatos', debug.artifact_wait_ms],
+        ['submit', debug.total_submit_ms],
+        ['total', debug.total_submit_wait_ms],
+    ]
+        .map(([label, value]) => {
+            const formatted = formatDebugMs(value);
+            return formatted ? `${label}: ${formatted}` : null;
+        })
+        .filter(Boolean);
+
+    return parts.length ? `NotaAgil debug - ${parts.join(' | ')}` : '';
+}
+
+function buildReceiptPrintKey(receipt) {
+    return String(receipt?.fiscal?.id || receipt?.id || receipt?.number || '').trim();
+}
+
+function buildFiscalPdfBaseName(receipt) {
+    const documentType = String(receipt?.fiscal?.document_type || '').trim().toLowerCase() === 'nfe' ? 'nfe' : 'nfce';
+    const number = String(receipt?.number || receipt?.fiscal?.numero || 'documento').trim() || 'documento';
+    const series = String(receipt?.series || receipt?.fiscal?.serie || '1').trim() || '1';
+
+    return `${documentType}-${number}-serie-${series}`;
 }
 
 function resetQuickErrors() {
@@ -494,6 +602,11 @@ function resetQuickErrors() {
 function clearMessages() {
     customerStepError.value = '';
     paymentError.value = '';
+    emissionError.value = '';
+    actionFeedback.value = '';
+}
+
+function clearFiscalPrintFeedback() {
     emissionError.value = '';
     actionFeedback.value = '';
 }
@@ -558,9 +671,13 @@ async function loadPaymentMethods() {
               }))
             : [];
 
-        paymentMethods.value = methods.length ? methods : fallbackPaymentMethods;
-    } catch {
-        paymentMethods.value = fallbackPaymentMethods;
+        paymentMethods.value = methods;
+        if (!methods.length) {
+            paymentError.value = 'Nenhuma forma de pagamento ativa cadastrada.';
+        }
+    } catch (error) {
+        paymentMethods.value = [];
+        paymentError.value = error?.response?.data?.message || 'Não foi possível carregar formas de pagamento.';
     } finally {
         paymentMethodsLoading.value = false;
         if (!selectedPaymentMethodId.value) {
@@ -594,10 +711,46 @@ async function loadPaymentPlansForMethod(methodId) {
 async function loadFiscalDefaults() {
     try {
         const { data } = await api.get('/settings/fiscal');
-        fiscalDefaults.documentSeries = String(data?.serie_nfce || '1');
+        fiscalDefaults.nfeSeries = String(data?.serie_nfe || '1');
+        fiscalDefaults.nfceSeries = String(data?.serie_nfce || '1');
+        fiscalDefaults.emitirNfe = Boolean(data?.emitir_nfe ?? false);
+        fiscalDefaults.emitirNfce = Boolean(data?.emitir_nfce ?? true);
+        fiscalDefaults.documentModel = 'NFC-e';
+        fiscalDefaults.documentSeries = fiscalDefaults.nfceSeries;
+        automaticPrintEnabled.value = Boolean(data?.impressao_automatica ?? false);
+        thermalPrintLayout.value = normalizeCupomLayout(data?.layout_cupom);
+        thermalPrintLogoUrl.value = String(data?.logo_url || '').trim() || null;
     } catch {
         fiscalDefaults.documentSeries = '1';
+        fiscalDefaults.nfeSeries = '1';
+        fiscalDefaults.nfceSeries = '1';
+        fiscalDefaults.emitirNfe = false;
+        fiscalDefaults.emitirNfce = true;
+        automaticPrintEnabled.value = false;
+        thermalPrintLayout.value = normalizeCupomLayout(null);
+        thermalPrintLogoUrl.value = null;
     }
+}
+
+function updateFiscalDocumentModel(model) {
+    const normalized = model === 'NF-e' ? 'NF-e' : 'NFC-e';
+    fiscalDefaults.documentModel = normalized;
+    fiscalDefaults.documentSeries = normalized === 'NF-e'
+        ? fiscalDefaults.nfeSeries
+        : fiscalDefaults.nfceSeries;
+    customerStepError.value = '';
+    clearAutoEmitCountdown();
+}
+
+function updateFiscalDocumentSeries(series) {
+    const normalized = String(series || '').trim() || '1';
+    fiscalDefaults.documentSeries = normalized;
+    if (fiscalDefaults.documentModel === 'NF-e') {
+        fiscalDefaults.nfeSeries = normalized;
+    } else {
+        fiscalDefaults.nfceSeries = normalized;
+    }
+    clearAutoEmitCountdown();
 }
 
 function resetQuickForm() {
@@ -622,6 +775,11 @@ function resetQuickForm() {
 function resetFiscalDefaults() {
     fiscalDefaults.documentModel = 'NFC-e';
     fiscalDefaults.documentSeries = '1';
+    fiscalDefaults.nfeSeries = '1';
+    fiscalDefaults.nfceSeries = '1';
+    fiscalDefaults.emitirNfe = false;
+    fiscalDefaults.emitirNfce = true;
+    automaticPrintEnabled.value = false;
 }
 
 function clearAutoEmitCountdown(resetProgress = true) {
@@ -636,6 +794,20 @@ function clearAutoEmitCountdown(resetProgress = true) {
     if (resetProgress) {
         autoEmitProgress.value = 0;
     }
+}
+
+function clearAutomaticFiscalSync() {
+    if (fiscalEventSource) {
+        fiscalEventSource.close();
+        fiscalEventSource = null;
+    }
+
+    if (fiscalEventStreamTimeout) {
+        clearTimeout(fiscalEventStreamTimeout);
+        fiscalEventStreamTimeout = null;
+    }
+
+    automaticFiscalSyncRunning = false;
 }
 
 function startAutoEmitCountdown() {
@@ -667,6 +839,11 @@ function resetFlow() {
     clearAutoEmitCountdown();
     currentStep.value = 1;
     successReceipt.value = null;
+    printingFiscal.value = false;
+    printingThermal.value = false;
+    autoPrintedReceiptKey.value = '';
+    pendingAutomaticThermalPrint.value = false;
+    clearAutomaticFiscalSync();
     customerMode.value = 'consumer';
     selectedCustomer.value = createConsumerCustomer();
     customerSearch.value = '';
@@ -701,18 +878,9 @@ async function performCustomerSearch(term) {
         } else {
             customerResults.value = [];
         }
-    } catch {
-        const needle = term.toLowerCase();
-        customerResults.value = mockCustomers
-            .map(normalizeCustomer)
-            .filter((item) => {
-                return (
-                    item.nome.toLowerCase().includes(needle) ||
-                    digitsOnly(item.cpf_cnpj).includes(digitsOnly(needle)) ||
-                    digitsOnly(item.telefone).includes(digitsOnly(needle)) ||
-                    String(item.id).toLowerCase().includes(needle)
-                );
-            });
+    } catch (error) {
+        customerResults.value = [];
+        customerSearchError.value = error?.response?.data?.message || 'Não foi possível buscar clientes.';
     } finally {
         customerSearchLoading.value = false;
     }
@@ -790,7 +958,7 @@ async function searchCep() {
         const response = await fetch(`https://viacep.com.br/ws/${cep}/json/`);
         const data = await response.json();
         if (data?.erro) {
-            quickErrors.cep = 'CEP nao encontrado';
+            quickErrors.cep = 'CEP não encontrado';
             return;
         }
 
@@ -833,38 +1001,54 @@ async function saveQuickCustomer() {
             pais: quickForm.country || 'Brasil',
         };
 
-        let customer = null;
-        try {
-            const { data } = await api.post('/customers', payload);
-            customer = normalizeCustomer(data || payload);
-        } catch {
-            customer = normalizeCustomer({
-                ...payload,
-                id: `quick-${Date.now()}`,
-            });
-        }
+        const { data } = await api.post('/customers', payload);
+        const customer = normalizeCustomer(data || payload);
 
         selectedCustomer.value = customer;
         emit('customer-selected', customer);
         customerStepError.value = '';
         actionFeedback.value = 'Cliente salvo e selecionado.';
+    } catch (error) {
+        const errors = error?.response?.data?.errors;
+        customerStepError.value = Object.values(errors || {}).flat()[0]
+            || error?.response?.data?.message
+            || 'Não foi possível salvar o cliente.';
     } finally {
         savingQuickCustomer.value = false;
     }
 }
 
 function validateStep1(showErrors = true) {
-    if (customerMode.value === 'consumer') return true;
+    const nfMessage = 'Não é possível avançar com NF-e sem identificar o cliente (CPF/CNPJ).';
+
+    if (customerMode.value === 'consumer') {
+        if (fiscalDefaults.documentModel !== 'NF-e') return true;
+        if (showErrors) {
+            customerMode.value = 'search';
+            customerStepError.value = nfMessage;
+        }
+        return false;
+    }
 
     if (customerMode.value === 'search') {
         const ok = !!selectedCustomer.value;
         if (!ok && showErrors) customerStepError.value = 'Selecione um cliente para continuar.';
-        return ok;
+        if (!ok) return false;
+        if (fiscalDefaults.documentModel === 'NF-e' && !hasIdentifiedFiscalCustomer(selectedCustomer.value)) {
+            if (showErrors) customerStepError.value = nfMessage;
+            return false;
+        }
+        return true;
     }
 
     const ok = !!selectedCustomer.value;
     if (!ok && showErrors) customerStepError.value = 'Salve o cliente rapido para continuar.';
-    return ok;
+    if (!ok) return false;
+    if (fiscalDefaults.documentModel === 'NF-e' && !hasIdentifiedFiscalCustomer(selectedCustomer.value)) {
+        if (showErrors) customerStepError.value = nfMessage;
+        return false;
+    }
+    return true;
 }
 
 function goNext() {
@@ -925,7 +1109,7 @@ function addPayment() {
     }
 
     if (!method.permite_multiplos_pagamentos && payments.value.some((item) => item.methodId === method.id)) {
-        paymentError.value = 'Esse meio nao permite multiplos lancamentos.';
+        paymentError.value = 'Esse meio não permite múltiplos lançamentos.';
         return;
     }
 
@@ -934,7 +1118,7 @@ function addPayment() {
     const nextPayableTotal = roundMoney(netTotal.value + nextInterestTotal);
     const willOverpay = nextPaid > nextPayableTotal;
     if (willOverpay && !method.permite_troco) {
-        paymentError.value = 'Esse meio nao permite troco para valor acima do total.';
+        paymentError.value = 'Esse meio não permite troco para valor acima do total.';
         return;
     }
 
@@ -969,6 +1153,31 @@ function removePayment(paymentId) {
     payments.value = payments.value.filter((item) => item.id !== paymentId);
 }
 
+function resolveFiscalItemCode(item) {
+    const barcode = String(item?.codigo_barras || item?.ean || item?.gtin || '').trim();
+    if (barcode) return barcode;
+
+    return String(item?.codigo || '').trim() || null;
+}
+
+function resolveFiscalItemUnit(item) {
+    const unit = [
+        item?.unidade_tributavel,
+        item?.tributacao?.unidade_tributavel,
+        item?.restaurant_config?.tributacao?.unidade_tributavel,
+        item?.unidade_medida?.codigo_fiscal,
+        item?.unidadeMedida?.codigo_fiscal,
+        item?.unidade,
+        item?.unit,
+        item?.unidade_medida?.unidade,
+        item?.unidadeMedida?.unidade,
+    ]
+        .map((candidate) => String(candidate || '').trim().toUpperCase())
+        .find(Boolean);
+
+    return unit || 'UN';
+}
+
 function buildPayload() {
     const context = props.saleContext && typeof props.saleContext === 'object'
         ? props.saleContext
@@ -979,7 +1188,9 @@ function buildPayload() {
         items: props.cart.map((item) => ({
             id: item.productId || item.id,
             nome: item.nome,
-            codigo: item.codigo || null,
+            codigo: resolveFiscalItemCode(item),
+            codigo_barras: String(item.codigo_barras || item.ean || item.gtin || '').trim() || null,
+            unidade: resolveFiscalItemUnit(item),
             quantidade: Number(item.qty || 0),
             valor_unitario: Number(item.preco_venda || 0),
             valor_total: roundMoney(Number(item.preco_venda || 0) * Number(item.qty || 0)),
@@ -1035,6 +1246,11 @@ async function emitNfce() {
         emissionError.value = paymentValidationMessage.value;
         return;
     }
+    if (fiscalValidationMessage.value) {
+        currentStep.value = 1;
+        emissionError.value = fiscalValidationMessage.value;
+        return;
+    }
 
     clearAutoEmitCountdown(false);
     processingEmission.value = true;
@@ -1048,17 +1264,165 @@ async function emitNfce() {
             series: data?.serie || fiscalDefaults.documentSeries || '1',
             total: payableTotal.value,
             status: data?.status || 'Autorizada local',
+            sold_at: data?.sold_at || null,
             fiscal: data?.fiscal || null,
         };
         successReceipt.value = receipt;
+        actionFeedback.value = fiscalDebugLabel(receipt);
+        if (isReceiptProcessing(receipt) || (isReceiptAuthorized(receipt) && !canPrintFiscalReceipt(receipt))) {
+            startFiscalEventStream();
+        }
     } catch (error) {
         const errors = error?.response?.data?.errors;
         emissionError.value = error?.response?.data?.message
             || (errors ? Object.values(errors).flat().join(' ') : '')
-            || `Nao foi possivel emitir a ${selectedDocumentLabel.value}.`;
+            || `Não foi possível emitir a ${selectedDocumentLabel.value}.`;
     } finally {
         processingEmission.value = false;
     }
+}
+
+function mergeFiscalIntoReceipt(fiscal) {
+    if (!successReceipt.value || !fiscal) return;
+
+    successReceipt.value = {
+        ...successReceipt.value,
+        status: fiscal.status_label || successReceipt.value.status,
+        fiscal,
+    };
+}
+
+function buildFiscalEventsUrl() {
+    if (!successReceipt.value?.id) return '';
+
+    const token = getToken();
+    const params = token ? `?access_token=${encodeURIComponent(token)}` : '';
+
+    return `/api/sales/${encodeURIComponent(successReceipt.value.id)}/fiscal/events${params}`;
+}
+
+function handleFiscalEventUpdate(event) {
+    let payload = {};
+    try {
+        payload = JSON.parse(event?.data || '{}');
+    } catch {
+        payload = {};
+    }
+
+    mergeFiscalIntoReceipt(payload?.fiscal);
+    actionFeedback.value = fiscalDebugLabel(successReceipt.value) || payload?.message || actionFeedback.value;
+
+    if (!successReceipt.value) return;
+
+    if (canPrintEmbeddedFiscalReceipt(successReceipt.value)) {
+        clearAutomaticFiscalSync();
+        void attemptAutomaticThermalPrint(false);
+        return;
+    }
+
+    if (!isReceiptProcessing(successReceipt.value)) {
+        clearAutomaticFiscalSync();
+    }
+}
+
+function startFiscalEventStream() {
+    if (!successReceipt.value?.id || fiscalEventSource) return;
+
+    const url = buildFiscalEventsUrl();
+    if (!url) return;
+
+    fiscalEventSource = new EventSource(url);
+    fiscalEventSource.addEventListener('fiscal.updated', handleFiscalEventUpdate);
+    fiscalEventSource.onerror = () => {
+        clearAutomaticFiscalSync();
+        if (automaticPrintEnabled.value && !canPrintEmbeddedFiscalReceipt(successReceipt.value)) {
+            pendingAutomaticThermalPrint.value = true;
+        }
+    };
+
+    fiscalEventStreamTimeout = setTimeout(() => {
+        clearAutomaticFiscalSync();
+        if (automaticPrintEnabled.value && !canPrintEmbeddedFiscalReceipt(successReceipt.value)) {
+            pendingAutomaticThermalPrint.value = true;
+        }
+    }, AUTOMATIC_FISCAL_SYNC_TIMEOUT_MS);
+}
+
+async function syncFiscalReceipt(mode = 'manual') {
+    if (!successReceipt.value?.id || fiscalSyncing.value) return false;
+
+    fiscalSyncing.value = true;
+    const startedAt = performance.now();
+
+    try {
+        const { data } = await api.post(`/sales/${successReceipt.value.id}/fiscal/sync`);
+        mergeFiscalIntoReceipt(data?.fiscal);
+        const elapsed = formatDebugMs(performance.now() - startedAt);
+        const debug = fiscalDebugLabel(successReceipt.value);
+
+        actionFeedback.value = [
+            data?.message || 'Documento fiscal sincronizado.',
+            elapsed ? `sync local: ${elapsed}` : null,
+            debug || null,
+        ].filter(Boolean).join(' | ');
+
+        return canPrintFiscalReceipt(successReceipt.value);
+    } catch (error) {
+        if (mode === 'manual') {
+            emissionError.value = error?.response?.data?.errors?.fiscal?.[0]
+                || error?.response?.data?.message
+                || error?.message
+                || 'Não foi possível sincronizar a autorização fiscal.';
+        }
+
+        return false;
+    } finally {
+        fiscalSyncing.value = false;
+    }
+}
+
+async function retryFiscalReceipt(mode = 'manual') {
+    if (!successReceipt.value?.id || fiscalSyncing.value) return false;
+
+    fiscalSyncing.value = true;
+    const startedAt = performance.now();
+
+    try {
+        const { data } = await api.post(`/sales/${successReceipt.value.id}/fiscal/retry`);
+        mergeFiscalIntoReceipt(data?.fiscal);
+        const elapsed = formatDebugMs(performance.now() - startedAt);
+        const debug = fiscalDebugLabel(successReceipt.value);
+
+        actionFeedback.value = [
+            data?.message || 'Retentativa fiscal concluída.',
+            elapsed ? `retry local: ${elapsed}` : null,
+            debug || null,
+        ].filter(Boolean).join(' | ');
+
+        return canPrintFiscalReceipt(successReceipt.value);
+    } catch (error) {
+        if (mode === 'manual') {
+            emissionError.value = error?.response?.data?.errors?.fiscal?.[0]
+                || error?.response?.data?.message
+                || error?.message
+                || 'Não foi possível retentar a autorização fiscal.';
+        }
+
+        return false;
+    } finally {
+        fiscalSyncing.value = false;
+    }
+}
+
+async function ensureFiscalReadyForPrint(mode = 'manual') {
+    if (canPrintFiscalReceipt(successReceipt.value)) return true;
+    if (!successReceipt.value?.fiscal) return false;
+
+    if (isReceiptContingency(successReceipt.value)) {
+        return retryFiscalReceipt(mode);
+    }
+
+    return syncFiscalReceipt(mode);
 }
 
 function finishSale(startNew = false) {
@@ -1080,8 +1444,237 @@ function finishSale(startNew = false) {
     emit('close');
 }
 
-function printDanfe() {
-    window.print();
+async function printDanfe(mode = 'manual') {
+    if (!successReceipt.value || printingFiscal.value) return;
+
+    const ready = await ensureFiscalReadyForPrint(mode);
+    const receipt = successReceipt.value;
+    if (!ready) {
+        emissionError.value = emissionError.value || 'Documento fiscal ainda não autorizado para impressão.';
+        actionFeedback.value = fiscalDebugLabel(receipt);
+        return;
+    }
+
+    if (!canPrintFiscalReceipt(receipt)) {
+        emissionError.value = 'A impressão fiscal será liberada após a autorização do documento.';
+        actionFeedback.value = '';
+        return;
+    }
+
+    const pdfUrl = receiptFiscalPdfUrl(receipt);
+    if (!pdfUrl) {
+        emissionError.value = 'PDF fiscal indisponível para impressão.';
+        actionFeedback.value = '';
+        return;
+    }
+
+    clearFiscalPrintFeedback();
+    printingFiscal.value = true;
+
+    try {
+        const result = await printFiscalPdf(pdfUrl, {
+            fallbackBaseName: buildFiscalPdfBaseName(receipt),
+            successMessage: mode === 'automatic'
+                ? 'PDF fiscal aberto no navegador.'
+                : 'PDF fiscal aberto no navegador.',
+        });
+
+        if (result.success) {
+            actionFeedback.value = result.message;
+            return;
+        }
+
+        if (mode === 'automatic') {
+            emissionError.value = `${result.message || 'A abertura do PDF não foi concluída.'} Use o botão "Imprimir ou salvar PDF".`;
+            return;
+        }
+
+        emissionError.value = result.message || 'Não foi possível imprimir o documento fiscal.';
+    } finally {
+        printingFiscal.value = false;
+    }
+}
+
+async function resolveFiscalXml() {
+    const xmlBase64 = receiptFiscalXmlBase64(successReceipt.value);
+    if (xmlBase64) {
+        return new TextDecoder().decode(base64ToBytes(xmlBase64));
+    }
+
+    const xmlUrl = receiptFiscalXmlUrl(successReceipt.value);
+    if (!xmlUrl) {
+        throw new Error('A API não retornou XML fiscal para impressão térmica.');
+    }
+
+    const { data } = await api.get(xmlUrl, {
+        responseType: 'text',
+        transformResponse: [(value) => value],
+    });
+
+    return String(data || '');
+}
+
+async function buildThermalReceiptPayload() {
+    const xml = await resolveFiscalXml();
+    return renderDanfceXmlEscPos(xml, {
+        protocol: successReceipt.value?.fiscal?.protocol || successReceipt.value?.fiscal?.protocolo || null,
+        companyName: props.emitter?.name || null,
+        logoUrl: thermalPrintLogoUrl.value,
+        layout: thermalPrintLayout.value,
+    });
+}
+
+async function ensureLocalPrinterConnected() {
+    if (localPrinterConnected.value) return true;
+
+    const state = isNetworkPrinterMode.value
+        ? await connectLocalPrinter()
+        : await connectLocalPrinter(printer.value.supportsSerial ? 'serial' : 'auto');
+    return state.status === 'connected';
+}
+
+async function connectPrinter() {
+    clearFiscalPrintFeedback();
+    const connected = await ensureLocalPrinterConnected();
+    if (!connected) {
+        emissionError.value = printer.value.lastError || (
+            isNetworkPrinterMode.value
+                ? 'Não foi possível conectar ao bridge da impressora.'
+                : 'Não foi possível conectar a impressora térmica.'
+        );
+        return;
+    }
+
+    actionFeedback.value = isNetworkPrinterMode.value
+        ? 'Bridge de impressão conectado.'
+        : 'Impressora térmica conectada.';
+}
+
+async function disconnectPrinter() {
+    await disconnectLocalPrinter();
+    actionFeedback.value = isNetworkPrinterMode.value
+        ? 'Bridge de impressão desconectado.'
+        : 'Impressora térmica desconectada.';
+}
+
+async function printThermalTestPage() {
+    clearFiscalPrintFeedback();
+    printingThermal.value = true;
+
+    try {
+        const connected = await ensureLocalPrinterConnected();
+        if (!connected) {
+            emissionError.value = printer.value.lastError || (
+                isNetworkPrinterMode.value
+                    ? 'Não foi possível conectar ao bridge da impressora.'
+                    : 'Não foi possível conectar a impressora térmica.'
+            );
+            return;
+        }
+
+        await printLocalTestPage();
+        actionFeedback.value = isNetworkPrinterMode.value
+            ? 'Página de teste enviada ao bridge da impressão.'
+            : 'Página de teste enviada para a impressora térmica.';
+    } catch (error) {
+        emissionError.value = error?.message || 'Falha ao imprimir a página de teste.';
+    } finally {
+        printingThermal.value = false;
+    }
+}
+
+async function printThermalReceipt(mode = 'manual') {
+    if (!successReceipt.value || printingThermal.value) return false;
+
+    clearFiscalPrintFeedback();
+    printingThermal.value = true;
+
+    try {
+        const fiscalReady = await ensureFiscalReadyForPrint(mode);
+        if (!fiscalReady) {
+            if (mode === 'automatic') {
+                pendingAutomaticThermalPrint.value = true;
+                return false;
+            }
+
+            emissionError.value = emissionError.value || 'Documento fiscal ainda não autorizado para impressão térmica.';
+            return false;
+        }
+
+        const connected = mode === 'automatic'
+            ? localPrinterConnected.value
+            : await ensureLocalPrinterConnected();
+
+        if (!connected) {
+            if (mode === 'automatic') {
+                pendingAutomaticThermalPrint.value = true;
+                return false;
+            }
+
+            emissionError.value = printer.value.lastError || (
+                isNetworkPrinterMode.value
+                    ? 'Conecte o bridge da impressora para imprimir o XML fiscal.'
+                    : 'Conecte a impressora térmica para imprimir o XML fiscal.'
+            );
+            return false;
+        }
+
+        await printLocalPayload(await buildThermalReceiptPayload());
+        pendingAutomaticThermalPrint.value = false;
+        actionFeedback.value = mode === 'automatic'
+            ? 'DANFC-e térmico enviado automaticamente para a impressora do caixa.'
+            : 'DANFC-e térmico enviado para a impressora do caixa.';
+        return true;
+    } catch (error) {
+        emissionError.value = error?.message || 'Falha ao renderizar ou enviar o XML fiscal para a impressora.';
+        return false;
+    } finally {
+        printingThermal.value = false;
+    }
+}
+
+async function attemptAutomaticThermalPrint(syncBeforePrint = false) {
+    if (!successReceipt.value || !automaticPrintEnabled.value || automaticFiscalSyncRunning) return false;
+
+    const receiptKey = buildReceiptPrintKey(successReceipt.value);
+    if (!receiptKey || autoPrintedReceiptKey.value === receiptKey) return true;
+
+    if (!localPrinterChannelAvailable.value) {
+        emissionError.value = 'Navegador sem WebSerial/WebUSB. Use "Imprimir ou salvar PDF" para abrir o PDF manualmente.';
+        return false;
+    }
+
+    automaticFiscalSyncRunning = true;
+
+    try {
+        if (syncBeforePrint && !canPrintEmbeddedFiscalReceipt(successReceipt.value)) {
+            await ensureFiscalReadyForPrint('automatic');
+        }
+
+        if (!canPrintEmbeddedFiscalReceipt(successReceipt.value)) {
+            pendingAutomaticThermalPrint.value = true;
+            if (isReceiptProcessing(successReceipt.value)) {
+                startFiscalEventStream();
+            }
+            return false;
+        }
+
+        if (!localPrinterConnected.value) {
+            pendingAutomaticThermalPrint.value = true;
+            clearAutomaticFiscalSync();
+            return false;
+        }
+
+        const printed = await printThermalReceipt('automatic');
+        if (printed) {
+            autoPrintedReceiptKey.value = buildReceiptPrintKey(successReceipt.value);
+            clearAutomaticFiscalSync();
+        }
+
+        return printed;
+    } finally {
+        automaticFiscalSyncRunning = false;
+    }
 }
 
 function resendReceipt() {
@@ -1090,6 +1683,11 @@ function resendReceipt() {
 
 function requestClose() {
     if (processingEmission.value) return;
+    if (successReceipt.value) {
+        finishSale(false);
+        return;
+    }
+
     if (!successReceipt.value && hasPendingChanges.value) {
         const confirmClose = window.confirm('Existem dados preenchidos. Deseja sair da finalizacao?');
         if (!confirmClose) return;
@@ -1224,10 +1822,37 @@ watch(
 
 watch(
     () => successReceipt.value,
-    (receipt) => {
+    async (receipt) => {
         if (receipt) {
             clearAutoEmitCountdown(false);
         }
+
+        if (!receipt || !automaticPrintEnabled.value) return;
+
+        const receiptKey = buildReceiptPrintKey(receipt);
+        if (!receiptKey || autoPrintedReceiptKey.value === receiptKey) return;
+
+        if (!canPrintEmbeddedFiscalReceipt(receipt)) {
+            startFiscalEventStream();
+        }
+
+        await attemptAutomaticThermalPrint(false);
+    },
+);
+
+watch(
+    () => printer.value.status,
+    async (status) => {
+        if (
+            status !== 'connected'
+            || !successReceipt.value
+            || !automaticPrintEnabled.value
+            || !pendingAutomaticThermalPrint.value
+        ) {
+            return;
+        }
+
+        await attemptAutomaticThermalPrint(false);
     },
 );
 
@@ -1255,6 +1880,7 @@ watch(
 onBeforeUnmount(() => {
     if (searchDebounce) clearTimeout(searchDebounce);
     clearAutoEmitCountdown();
+    clearAutomaticFiscalSync();
     window.removeEventListener('keydown', handleWindowKeydown);
 });
 </script>
@@ -1269,15 +1895,79 @@ onBeforeUnmount(() => {
 
             <div class="finalize-grid">
                 <section class="finalize-content">
-                    <FinalizationSuccessState
-                        v-if="successReceipt"
-                        :receipt="successReceipt"
-                        :format-currency="formatCurrency"
-                        @print="printDanfe"
-                        @resend="resendReceipt"
-                        @new-sale="finishSale(true)"
-                        @close="finishSale(false)"
-                    />
+                    <template v-if="successReceipt">
+                        <FinalizationSuccessState
+                            :receipt="successReceipt"
+                            :format-currency="formatCurrency"
+                            :print-disabled="!successReceiptCanOpenPdf"
+                            :print-hint="successReceiptPrintHint"
+                            :printing="printingFiscal"
+                            @print="printDanfe"
+                            @resend="resendReceipt"
+                            @new-sale="finishSale(true)"
+                            @close="finishSale(false)"
+                        />
+
+                        <section class="local-printer-card">
+                            <div class="local-printer-card__head">
+                                <div>
+                                    <p class="local-printer-card__eyebrow">Impressora térmica</p>
+                                    <h4 class="local-printer-card__title">DANFC-e térmico ESC/POS</h4>
+                                </div>
+                                <span class="local-printer-status" :class="{ 'is-connected': localPrinterConnected, 'is-error': printer.status === 'error' }">
+                                    {{ localPrinterStatusLabel }}
+                                </span>
+                            </div>
+
+                            <p class="local-printer-card__hint">{{ localPrinterHint }}</p>
+                            <p v-if="printer.label" class="local-printer-card__device">Dispositivo: {{ printer.label }}</p>
+
+                            <div class="local-printer-card__actions">
+                                <AppButton
+                                    variant="secondary"
+                                    :disabled="localPrinterBusy || !localPrinterChannelAvailable"
+                                    @click="connectPrinter"
+                                >
+                                    {{ localPrinterConnected ? 'Reconectar impressora' : 'Conectar impressora' }}
+                                </AppButton>
+                                <AppButton
+                                    v-if="successReceipt && !successReceiptCanPrint"
+                                    variant="secondary"
+                                    :loading="fiscalSyncing"
+                                    :disabled="printingThermal || printingFiscal"
+                                    @click="isReceiptContingency(successReceipt) ? retryFiscalReceipt('manual') : syncFiscalReceipt('manual')"
+                                >
+                                    {{ isReceiptContingency(successReceipt) ? 'Retentar autorização' : 'Sincronizar fiscal' }}
+                                </AppButton>
+                                <AppButton
+                                    variant="secondary"
+                                    :disabled="thermalPrintDisabled"
+                                    :loading="printingThermal"
+                                    @click="printThermalReceipt('manual')"
+                                >
+                                    Imprimir na térmica
+                                </AppButton>
+                                <AppButton
+                                    variant="ghost"
+                                    :disabled="localPrinterBusy || !localPrinterChannelAvailable"
+                                    @click="printThermalTestPage"
+                                >
+                                    Teste
+                                </AppButton>
+                                <AppButton
+                                    v-if="localPrinterConnected"
+                                    variant="ghost"
+                                    :disabled="localPrinterBusy"
+                                    @click="disconnectPrinter"
+                                >
+                                    Desconectar
+                                </AppButton>
+                            </div>
+                            <p v-if="fiscalDebugLabel(successReceipt)" class="local-printer-card__hint">
+                                {{ fiscalDebugLabel(successReceipt) }}
+                            </p>
+                        </section>
+                    </template>
 
                     <template v-else>
                         <div v-if="currentStep === 1" class="space-y-4">
@@ -1291,7 +1981,7 @@ onBeforeUnmount(() => {
                                     @keydown.enter.prevent.stop="handleConsumerConfirmEnter"
                                 >
                                     <p>Consumidor final</p>
-                                    <small>Venda rapida sem identificacao</small>
+                                    <small>Venda rápida sem identificação</small>
                                 </button>
                                 <button
                                     type="button"
@@ -1313,9 +2003,25 @@ onBeforeUnmount(() => {
                                 </button>
                             </div>
 
+                            <FiscalDocumentSelector
+                                :document-model="fiscalDefaults.documentModel"
+                                :document-series="fiscalDefaults.documentSeries"
+                                :nfce-enabled="fiscalDefaults.emitirNfce"
+                                :nfe-enabled="fiscalDefaults.emitirNfe"
+                                :disabled="processingEmission"
+                                @update:document-model="updateFiscalDocumentModel"
+                                @update:document-series="updateFiscalDocumentSeries"
+                            />
+
                             <div v-if="customerMode === 'consumer'" class="ui-card p-4">
                                 <p class="text-sm font-bold text-main">Consumidor final selecionado.</p>
-                                <p class="text-sm text-muted mt-1">A venda sera emitida sem identificacao nominal do cliente.</p>
+                                <p class="text-sm text-muted mt-1">
+                                    {{
+                                        fiscalDefaults.documentModel === 'NF-e'
+                                            ? 'NF-e exige cliente identificado com CPF/CNPJ.'
+                                            : 'A venda sera emitida sem identificacao nominal do cliente.'
+                                    }}
+                                </p>
                                 <AppButton class="mt-3" variant="secondary" @click="setCustomerMode('search')">Trocar cliente</AppButton>
                             </div>
 
@@ -1363,7 +2069,7 @@ onBeforeUnmount(() => {
                                         label="Tipo de pessoa"
                                         @update:model-value="updateQuickField('personType', $event)"
                                     >
-                                        <option value="fisica">Pessoa fisica</option>
+                                        <option value="fisica">Pessoa física</option>
                                         <option value="juridica">Pessoa juridica</option>
                                     </AppSelect>
                                     <AppInput
@@ -1376,7 +2082,7 @@ onBeforeUnmount(() => {
                                     />
                                     <AppInput
                                         :model-value="quickForm.name"
-                                        label="Nome / Razao social"
+                                        label="Nome / Razão social"
                                         :error="quickErrors.name"
                                         class="md:col-span-2"
                                         @update:model-value="updateQuickField('name', $event)"
@@ -1389,7 +2095,7 @@ onBeforeUnmount(() => {
                                     />
                                     <AppInput
                                         :model-value="quickForm.number"
-                                        label="Numero"
+                                        label="Número"
                                         :error="quickErrors.number"
                                         @update:model-value="updateQuickField('number', $event)"
                                     />
@@ -1457,7 +2163,7 @@ onBeforeUnmount(() => {
                                     />
                                     <AppTextarea
                                         :model-value="quickForm.notes"
-                                        label="Observacao"
+                                        label="Observação"
                                         rows="3"
                                         class="md:col-span-2"
                                         @update:model-value="updateQuickField('notes', $event)"
@@ -1475,6 +2181,7 @@ onBeforeUnmount(() => {
                                 </div>
                             </div>
 
+                            <p v-if="fiscalValidationMessage" class="text-sm text-warning">{{ fiscalValidationMessage }}</p>
                             <p v-if="customerStepError" class="text-sm text-danger">{{ customerStepError }}</p>
                         </div>
 
@@ -1492,7 +2199,7 @@ onBeforeUnmount(() => {
                             </section>
 
                             <section class="ui-card p-4 space-y-3 payment-composition-card">
-                                <h3 class="text-base font-bold text-main">Composicao de pagamentos</h3>
+                                <h3 class="text-base font-bold text-main">Composição de pagamentos</h3>
 
                                 <div v-if="isCreditMethod && selectedPaymentMethod?.permite_parcelamento" class="credit-config-wrap">
                                     <div class="credit-config-grid">
@@ -1506,13 +2213,13 @@ onBeforeUnmount(() => {
                                             </option>
                                         </AppSelect>
                                         <div class="credit-config-card">
-                                            <p>Acrecimo aplicado: <strong>{{ formatPercent(selectedInterestRate) }}</strong></p>
+                                            <p>Parcelamento sem juros.</p>
                                             <p v-if="selectedInstallments > 1">
                                                 Parcela estimada:
                                                 <strong>{{ formatCurrency(enteredInstallmentAmount) }}</strong>
                                             </p>
                                             <p>
-                                                Total com Acrecimos:
+                                                Total do pagamento:
                                                 <strong>{{ formatCurrency(enteredPaymentTotal) }}</strong>
                                             </p>
                                             <p v-if="paymentPlansLoading" class="text-muted">Carregando planos...</p>
@@ -1571,18 +2278,10 @@ onBeforeUnmount(() => {
                         <div v-if="currentStep === 3" class="space-y-4">
                             <section class="finalization-panel">
                                 <p class="finalization-eyebrow">Pronto para emitir</p>
-                                <h3 class="finalization-title">Finalizacao da venda</h3>
+                                <h3 class="finalization-title">Finalização da venda</h3>
                                 <p class="finalization-subtitle">
                                     Confira os totais e confirme a emissão da {{ selectedDocumentLabel }} para concluir esta venda.
                                 </p>
-
-                                <FiscalDocumentSelector
-                                    :document-model="fiscalDefaults.documentModel"
-                                    :document-series="fiscalDefaults.documentSeries"
-                                    :disabled="processingEmission"
-                                    @update:document-model="fiscalDefaults.documentModel = $event"
-                                    @update:document-series="fiscalDefaults.documentSeries = String($event || '').trim() || '1'"
-                                />
 
                                 <div class="finalization-grid">
                                     <div>
@@ -1632,6 +2331,9 @@ onBeforeUnmount(() => {
                                         </span>
                                     </AppButton>
                                 </div>
+                                <p v-if="autoEmitCountdownActive" class="finalization-countdown-hint">
+                                    A emissao automatica aguarda {{ autoEmitSecondsLeft }}s para confirmar a venda.
+                                </p>
                             </section>
                         </div>
                     </template>
@@ -1783,6 +2485,74 @@ onBeforeUnmount(() => {
     border: 1px solid color-mix(in srgb, var(--color-success) 36%, transparent);
     background: color-mix(in srgb, var(--color-success) 10%, var(--color-bg-surface));
     padding: 0.56rem 0.65rem;
+}
+
+.local-printer-card {
+    border-radius: var(--radius-md);
+    border: 1px solid color-mix(in srgb, var(--color-primary) 32%, var(--color-border));
+    background: color-mix(in srgb, var(--color-primary) 7%, var(--color-bg-surface));
+    padding: 0.85rem;
+    display: grid;
+    gap: 0.65rem;
+}
+
+.local-printer-card__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.local-printer-card__eyebrow {
+    margin: 0;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    font-weight: 800;
+    color: var(--color-text-muted);
+}
+
+.local-printer-card__title {
+    margin: 0.16rem 0 0;
+    font-size: 0.98rem;
+    line-height: 1.2;
+    font-weight: 900;
+    color: var(--color-text);
+}
+
+.local-printer-card__hint,
+.local-printer-card__device {
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--color-text-muted);
+}
+
+.local-printer-status {
+    flex: 0 0 auto;
+    border-radius: 999px;
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-elevated);
+    color: var(--color-text-muted);
+    padding: 0.2rem 0.48rem;
+    font-size: 0.72rem;
+    font-weight: 800;
+}
+
+.local-printer-status.is-connected {
+    border-color: color-mix(in srgb, var(--color-success) 44%, var(--color-border));
+    background: color-mix(in srgb, var(--color-success) 12%, var(--color-bg-surface));
+    color: var(--color-success);
+}
+
+.local-printer-status.is-error {
+    border-color: color-mix(in srgb, var(--color-danger) 44%, var(--color-border));
+    background: color-mix(in srgb, var(--color-danger) 12%, var(--color-bg-surface));
+    color: var(--color-danger);
+}
+
+.local-printer-card__actions {
+    display: grid;
+    gap: 0.5rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .payment-step-layout {
@@ -1954,6 +2724,14 @@ onBeforeUnmount(() => {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.finalization-countdown-hint {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-align: right;
+}
+
 .emit-progress-btn {
     position: relative;
     overflow: hidden;
@@ -2026,7 +2804,8 @@ onBeforeUnmount(() => {
     }
 
     .finalization-grid,
-    .finalization-actions {
+    .finalization-actions,
+    .local-printer-card__actions {
         grid-template-columns: 1fr;
     }
 }

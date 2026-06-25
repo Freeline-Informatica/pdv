@@ -14,7 +14,7 @@ class AcquirerTerminalRate extends Model
 
     protected $fillable = [
         'terminal_id', 'tipo_credito', 'taxa_operadora', 'recebe_em',
-        'parc_sugerida', 'parc_maximo', 'ativo', 'parc_inicial', 'parc_final',
+        'parc_sugerida', 'ativo', 'parc_inicial', 'parc_final',
     ];
 
     protected $casts = [

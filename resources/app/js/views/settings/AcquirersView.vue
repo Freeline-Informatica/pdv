@@ -29,6 +29,7 @@ const activeTerminalDetailTab = ref(TERMINAL_DETAIL_TAB.GENERAL);
 const acquirerDialog = ref(false);
 const terminalDialog = ref(false);
 const rateDialog = ref(false);
+const rateError = ref('');
 
 const editingAcquirerId = ref(null);
 const editingTerminalId = ref(null);
@@ -73,7 +74,6 @@ const rateForm = reactive({
     parc_inicial: '1',
     parc_final: '1',
     parc_sugerida: '1',
-    parc_maximo: '1',
     ativo: true,
 });
 
@@ -100,8 +100,8 @@ function resetRateForm() {
     rateForm.parc_inicial = '1';
     rateForm.parc_final = '1';
     rateForm.parc_sugerida = '1';
-    rateForm.parc_maximo = limites[rateFilter.value] || '1';
     rateForm.ativo = true;
+    rateError.value = '';
 }
 
 function resetTef() {
@@ -140,11 +140,11 @@ async function loadRates() {
     const { data } = await api.get(`/terminals/${selectedTerminal.value.id}/rates`);
     rates.value = data;
 
-    const adminRate = data.find((item) => item.tipo_credito === 'credito_administradora' && item.parc_maximo);
-    const lojistaRate = data.find((item) => item.tipo_credito === 'credito_lojista' && item.parc_maximo);
+    const adminRate = data.find((item) => item.tipo_credito === 'credito_administradora' && item.parc_final);
+    const lojistaRate = data.find((item) => item.tipo_credito === 'credito_lojista' && item.parc_final);
 
-    limites.credito_administradora = adminRate?.parc_maximo ? String(adminRate.parc_maximo) : '';
-    limites.credito_lojista = lojistaRate?.parc_maximo ? String(lojistaRate.parc_maximo) : '';
+    limites.credito_administradora = adminRate?.parc_final ? String(adminRate.parc_final) : '';
+    limites.credito_lojista = lojistaRate?.parc_final ? String(lojistaRate.parc_final) : '';
     permiteLojista.value = !!limites.credito_lojista;
 }
 
@@ -366,20 +366,44 @@ function openEditRate(item) {
     rateForm.parc_inicial = String(item.parc_inicial || 1);
     rateForm.parc_final = String(item.parc_final || 1);
     rateForm.parc_sugerida = String(item.parc_sugerida || 1);
-    rateForm.parc_maximo = String(item.parc_maximo || 1);
     rateForm.ativo = !!item.ativo;
+    rateError.value = '';
     rateDialog.value = true;
 }
 
 async function saveRate() {
+    rateError.value = '';
+    const initialInstallment = Number(rateForm.parc_inicial);
+    const finalInstallment = Number(rateForm.parc_final);
+    const suggestedInstallment = Number(rateForm.parc_sugerida);
+
+    if (
+        !Number.isInteger(initialInstallment)
+        || !Number.isInteger(finalInstallment)
+        || !Number.isInteger(suggestedInstallment)
+        || initialInstallment < 1
+    ) {
+        rateError.value = 'Informe parcelas inteiras maiores ou iguais a 1.';
+        return;
+    }
+
+    if (finalInstallment < initialInstallment) {
+        rateError.value = 'A parcela final deve ser maior ou igual à parcela inicial.';
+        return;
+    }
+
+    if (suggestedInstallment < initialInstallment || suggestedInstallment > finalInstallment) {
+        rateError.value = 'A parcela sugerida deve estar entre a parcela inicial e a parcela final.';
+        return;
+    }
+
     const payload = {
         tipo_credito: rateFilter.value,
         taxa_operadora: Number(rateForm.taxa_operadora || 0),
         recebe_em: Number(rateForm.recebe_em || 1),
-        parc_inicial: Number(rateForm.parc_inicial || 1),
-        parc_final: Number(rateForm.parc_final || 1),
-        parc_sugerida: Number(rateForm.parc_sugerida || 1),
-        parc_maximo: Number((rateFilter.value === 'debito' ? rateForm.parc_maximo : (limites[rateFilter.value] || rateForm.parc_maximo)) || 1),
+        parc_inicial: initialInstallment,
+        parc_final: finalInstallment,
+        parc_sugerida: suggestedInstallment,
         ativo: rateForm.ativo,
     };
 
@@ -410,14 +434,19 @@ async function saveLimits() {
         const { data } = await api.get(`/terminals/${selectedTerminal.value.id}/rates?tipo_credito=${type}`);
 
         for (const row of data) {
+            const initialInstallment = Math.min(Math.max(1, Number(row.parc_inicial || 1)), max);
+            const suggestedInstallment = Math.min(
+                Math.max(initialInstallment, Number(row.parc_sugerida || initialInstallment)),
+                max,
+            );
+
             await api.put(`/rates/${row.id}`, {
                 tipo_credito: row.tipo_credito,
                 taxa_operadora: Number(row.taxa_operadora || 0),
                 recebe_em: Number(row.recebe_em || 1),
-                parc_inicial: Number(row.parc_inicial || 1),
-                parc_final: Number(row.parc_final || 1),
-                parc_sugerida: Number(row.parc_sugerida || 1),
-                parc_maximo: max,
+                parc_inicial: initialInstallment,
+                parc_final: max,
+                parc_sugerida: suggestedInstallment,
                 ativo: !!row.ativo,
             });
         }
@@ -468,6 +497,12 @@ watch(selectedTerminal, async () => {
     activeTerminalDetailTab.value = TERMINAL_DETAIL_TAB.GENERAL;
     await loadRates();
     await loadTef();
+});
+
+watch(permiteLojista, (enabled) => {
+    if (!enabled && rateFilter.value === 'credito_lojista') {
+        rateFilter.value = 'credito_administradora';
+    }
 });
 
 onMounted(() => {
@@ -707,16 +742,16 @@ onBeforeUnmount(() => {
                         <h4 class="font-medium text-slate-900">Limites de parcelamento</h4>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
-                                <label class="text-sm font-medium">Parcelado pela administradora</label>
+                                <label class="text-sm font-medium">Parcelas pela administradora</label>
                                 <input v-model="limites.credito_administradora" type="number" min="1" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
                             </div>
                             <div class="flex items-end">
                                 <label class="flex items-center gap-2 text-sm">
-                                    <input v-model="permiteLojista" type="checkbox" /> Permite parcelamento pelo lojista
+                                    <input v-model="permiteLojista" type="checkbox" /> Permite parcelamento pelo lojista sem juros
                                 </label>
                             </div>
                             <div v-if="permiteLojista">
-                                <label class="text-sm font-medium">Parcelado pelo lojista</label>
+                                <label class="text-sm font-medium">Parcelas pelo lojista</label>
                                 <input v-model="limites.credito_lojista" type="number" min="1" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
                             </div>
                         </div>
@@ -936,12 +971,9 @@ onBeforeUnmount(() => {
                         <label class="text-sm font-medium">Parcela sugerida</label>
                         <input v-model="rateForm.parc_sugerida" type="number" min="1" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
                     </div>
-                    <div>
-                        <label class="text-sm font-medium">Máx. parcelas</label>
-                        <input v-model="rateForm.parc_maximo" type="number" min="1" class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" :disabled="rateFilter !== 'debito'" />
-                    </div>
-                    <label class="flex items-center gap-2 text-sm md:col-span-2"><input v-model="rateForm.ativo" type="checkbox" /> Ativo</label>
+                    <label class="flex items-center gap-2 text-sm"><input v-model="rateForm.ativo" type="checkbox" /> Ativo</label>
                 </div>
+                <p v-if="rateError" class="text-sm text-red-600">{{ rateError }}</p>
                 <div class="flex justify-end gap-2">
                     <button class="rounded-lg border px-4 py-2 text-sm" @click="rateDialog = false">Cancelar</button>
                     <button class="rounded-lg bg-emerald-600 text-white px-4 py-2 text-sm font-semibold" @click="saveRate">Salvar</button>

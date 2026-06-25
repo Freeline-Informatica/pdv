@@ -7,8 +7,6 @@ import {
     getTerminalSession,
     getToken,
     getUser,
-    isIntegratedMode,
-    redirectToErpLogin,
     setTerminalSession,
     setUser,
 } from '../lib/auth';
@@ -42,6 +40,7 @@ import StockAdjustmentsView from '../views/settings/StockAdjustmentsView.vue';
 import StockInventoryView from '../views/settings/StockInventoryView.vue';
 import SalesHistoryView from '../views/settings/SalesHistoryView.vue';
 import CashRegistersView from '../views/settings/CashRegistersView.vue';
+import CustomersView from '../views/settings/CustomersView.vue';
 import SuppliersView from '../views/settings/SuppliersView.vue';
 import PurchaseOrdersListView from '../views/settings/PurchaseOrdersListView.vue';
 import PurchaseOrderFormView from '../views/settings/PurchaseOrderFormView.vue';
@@ -175,6 +174,10 @@ const routes = [
                 component: CashRegistersView,
             },
             {
+                path: 'clientes',
+                component: CustomersView,
+            },
+            {
                 path: 'compras',
                 component: PurchaseOrdersListView,
             },
@@ -259,31 +262,16 @@ router.beforeEach(async (to, from) => {
             }
         }
 
-        if (to.path === '/login' && isIntegratedMode()) {
-            redirectToErpLogin();
-            return false;
-        }
-
         return true;
     }
 
     if (!getToken()) {
-        if (isIntegratedMode()) {
-            redirectToErpLogin();
-            return false;
-        }
-
         clearAuthData();
         return '/login';
     }
 
     const user = await ensureCurrentUser();
     if (!user) {
-        if (isIntegratedMode()) {
-            redirectToErpLogin();
-            return false;
-        }
-
         return '/login';
     }
 

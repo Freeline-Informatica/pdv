@@ -7,6 +7,18 @@ const props = defineProps({
         type: Function,
         required: true,
     },
+    printDisabled: {
+        type: Boolean,
+        default: false,
+    },
+    printHint: {
+        type: String,
+        default: '',
+    },
+    printing: {
+        type: Boolean,
+        default: false,
+    },
     receipt: {
         type: Object,
         default: null,
@@ -27,6 +39,13 @@ const description = computed(() => {
     if (isProcessing.value) return 'A emissão foi enviada e seguirá em processamento.';
     return 'Documento autorizado. Escolha a próxima ação.';
 });
+const printHelperText = computed(() => {
+    if (props.printHint) return props.printHint;
+    if (isContingency.value || isProcessing.value) {
+        return 'A impressão fiscal será liberada após a autorização do documento.';
+    }
+    return '';
+});
 </script>
 
 <template>
@@ -37,7 +56,7 @@ const description = computed(() => {
 
         <div v-if="receipt" class="success-grid">
             <div>
-                <span>Numero</span>
+                <span>Número</span>
                 <strong>{{ receipt.number }}</strong>
             </div>
             <div>
@@ -55,11 +74,15 @@ const description = computed(() => {
         </div>
 
         <div class="success-actions">
-            <AppButton variant="secondary" @click="emit('print')">Imprimir DANFE/NFC-e</AppButton>
+            <AppButton variant="secondary" :disabled="printDisabled" :loading="printing" @click="emit('print')">
+                Imprimir ou salvar PDF
+            </AppButton>
             <AppButton variant="secondary" @click="emit('resend')">Reenviar comprovante</AppButton>
             <AppButton @click="emit('new-sale')">Iniciar nova venda</AppButton>
             <AppButton variant="ghost" @click="emit('close')">Voltar ao PDV</AppButton>
         </div>
+
+        <p v-if="printHelperText" class="success-print-hint">{{ printHelperText }}</p>
     </section>
 </template>
 
@@ -125,6 +148,12 @@ const description = computed(() => {
     display: grid;
     gap: 0.55rem;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.success-print-hint {
+    margin: 0.75rem 0 0;
+    font-size: 0.74rem;
+    color: var(--color-text-muted);
 }
 
 @media (max-width: 760px) {

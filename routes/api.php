@@ -9,6 +9,7 @@ use Freeline\Pdv\Http\Controllers\Api\CatalogFamiliesController;
 use Freeline\Pdv\Http\Controllers\Api\CatalogProductsController;
 use Freeline\Pdv\Http\Controllers\Api\CatalogUnitsController;
 use Freeline\Pdv\Http\Controllers\Api\CategoriesController;
+use Freeline\Pdv\Http\Controllers\Api\CustomersController;
 use Freeline\Pdv\Http\Controllers\Api\OperatorsController;
 use Freeline\Pdv\Http\Controllers\Api\PaymentMethodsController;
 use Freeline\Pdv\Http\Controllers\Api\PaymentPlansController;
@@ -25,9 +26,11 @@ use Freeline\Pdv\Http\Controllers\Api\StockInventoriesController;
 use Freeline\Pdv\Http\Controllers\Api\StockMovementsController;
 use Freeline\Pdv\Http\Controllers\Api\SuppliersController;
 use Freeline\Pdv\Http\Controllers\Api\TerminalsController;
+use Freeline\Pdv\Http\Controllers\Api\NotagilWebhookController;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/auth/login', [AuthController::class, 'login']);
+Route::post('/webhooks/notagil', NotagilWebhookController::class);
 
 Route::middleware(['pdv.auth.token', 'pdv.audit.trail'])->group(function (): void {
     $standaloneRoutesEnabled = config('pdv.mode', 'standalone') === 'standalone'
@@ -42,11 +45,15 @@ Route::middleware(['pdv.auth.token', 'pdv.audit.trail'])->group(function (): voi
     Route::get('/settings/fiscal', [SettingsController::class, 'fiscal']);
     Route::get('/payment-methods', [PaymentMethodsController::class, 'index']);
     Route::get('/payment-plans', [PaymentPlansController::class, 'index']);
+    Route::get('/customers', [CustomersController::class, 'index']);
+    Route::post('/customers', [CustomersController::class, 'store']);
 
     Route::middleware('pdv.settings.access')->group(function () use ($standaloneRoutesEnabled): void {
         Route::get('/settings/company', [SettingsController::class, 'company']);
         Route::put('/settings/company', [SettingsController::class, 'upsertCompany']);
         Route::put('/settings/fiscal', [SettingsController::class, 'upsertFiscal']);
+        Route::post('/settings/fiscal/notagil/webhook', [SettingsController::class, 'provisionNotagilWebhook']);
+        Route::post('/settings/fiscal/notagil/webhook/secret', [SettingsController::class, 'rotateNotagilWebhookSecret']);
         Route::get('/settings/certificate', [SettingsController::class, 'certificate']);
         Route::put('/settings/certificate', [SettingsController::class, 'upsertCertificate']);
         Route::get('/audit-logs', [AuditLogsController::class, 'index']);
@@ -60,6 +67,7 @@ Route::middleware(['pdv.auth.token', 'pdv.audit.trail'])->group(function (): voi
         Route::post('/sales/{sale}/cancel', [SalesController::class, 'cancel']);
         Route::post('/sales/{sale}/fiscal/retry', [SalesController::class, 'retryFiscal']);
         Route::post('/sales/{sale}/fiscal/sync', [SalesController::class, 'syncFiscal']);
+        Route::get('/sales/{sale}/fiscal/events', [SalesController::class, 'fiscalEvents']);
         Route::get('/sales/{sale}/fiscal/{artifact}', [SalesController::class, 'fiscalArtifact'])->whereIn('artifact', ['xml', 'pdf']);
 
         Route::get('/cash-registers', [CashRegistersController::class, 'index']);
@@ -73,6 +81,7 @@ Route::middleware(['pdv.auth.token', 'pdv.audit.trail'])->group(function (): voi
         }
 
         Route::get('/catalog/products/support-data', [CatalogProductsController::class, 'supportData']);
+        Route::get('/catalog/products/ncms', [CatalogProductsController::class, 'searchNcms']);
         Route::get('/catalog/products', [CatalogProductsController::class, 'index']);
         Route::post('/catalog/products', [CatalogProductsController::class, 'store']);
         Route::get('/catalog/products/{produto}', [CatalogProductsController::class, 'show']);
@@ -115,6 +124,9 @@ Route::middleware(['pdv.auth.token', 'pdv.audit.trail'])->group(function (): voi
         Route::post('/suppliers', [SuppliersController::class, 'store']);
         Route::put('/suppliers/{supplier}', [SuppliersController::class, 'update']);
         Route::delete('/suppliers/{supplier}', [SuppliersController::class, 'destroy']);
+
+        Route::put('/customers/{customer}', [CustomersController::class, 'update']);
+        Route::delete('/customers/{customer}', [CustomersController::class, 'destroy']);
 
         Route::get('/purchase-orders', [PurchaseOrdersController::class, 'index']);
         Route::post('/purchase-orders', [PurchaseOrdersController::class, 'store']);

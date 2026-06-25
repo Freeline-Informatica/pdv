@@ -16,6 +16,7 @@ class PosController extends Controller
 {
     private const VALID_LAYOUT_MODES = ['varejo', 'restaurante', 'servicos'];
     private const VALID_RESTAURANT_MODES = ['auto_atendimento', 'totem', 'caixa', 'comanda_bar', 'comanda_cozinha', 'comanda_garcom'];
+    private const VALID_CONNECTION_MODES = ['direct', 'network'];
 
     public function __construct(
         private readonly ProductCatalogRepository $products,
@@ -67,6 +68,7 @@ class PosController extends Controller
             'document_series' => (string) (data_get($fiscal, 'serie_nfce') ?: data_get($fiscal, 'serie_nfe') ?: '1'),
             'pdv_layout_mode' => $companyLayoutMode,
             'pdv_restaurant_mode' => $terminalSettings['restaurant_mode'] ?? null,
+            'device_access' => $terminalSettings['device_access'] ?? $this->defaultDeviceAccess(),
             'estabelecimento_id' => $this->companyContextResolver->currentEstablishmentId(),
             'grupo_empresarial_id' => $this->companyContextResolver->currentGroupId(),
         ]);
@@ -78,7 +80,17 @@ class PosController extends Controller
         if ($id === '') return null;
 
         $terminal = $this->scopedTerminalQuery()
-            ->select(['id', 'ativo', 'pdv_restaurant_mode'])
+            ->select([
+                'id',
+                'ativo',
+                'pdv_restaurant_mode',
+                'printer_connection_mode',
+                'printer_bridge_base_url',
+                'printer_bridge_device_id',
+                'scale_connection_mode',
+                'scale_bridge_base_url',
+                'scale_bridge_device_id',
+            ])
             ->find($id);
 
         if (! $terminal || ! $terminal->ativo) {
@@ -87,6 +99,18 @@ class PosController extends Controller
 
         return [
             'restaurant_mode' => $this->normalizeRestaurantMode($companyLayoutMode, $terminal->pdv_restaurant_mode),
+            'device_access' => [
+                'printer' => [
+                    'mode' => $this->normalizeConnectionMode($terminal->printer_connection_mode),
+                    'bridge_base_url' => $this->normalizeBridgeBaseUrl($terminal->printer_bridge_base_url),
+                    'bridge_device_id' => $this->normalizeBridgeDeviceId($terminal->printer_bridge_device_id),
+                ],
+                'scale' => [
+                    'mode' => $this->normalizeConnectionMode($terminal->scale_connection_mode),
+                    'bridge_base_url' => $this->normalizeBridgeBaseUrl($terminal->scale_bridge_base_url),
+                    'bridge_device_id' => $this->normalizeBridgeDeviceId($terminal->scale_bridge_device_id),
+                ],
+            ],
         ];
     }
 
@@ -105,6 +129,43 @@ class PosController extends Controller
 
         $normalized = mb_strtolower(trim((string) $value));
         return in_array($normalized, self::VALID_RESTAURANT_MODES, true) ? $normalized : 'comanda_garcom';
+    }
+
+    private function normalizeConnectionMode(?string $value): string
+    {
+        $normalized = mb_strtolower(trim((string) $value));
+
+        return in_array($normalized, self::VALID_CONNECTION_MODES, true) ? $normalized : 'direct';
+    }
+
+    private function normalizeBridgeBaseUrl(mixed $value): ?string
+    {
+        $normalized = trim((string) $value);
+
+        return $normalized !== '' ? rtrim($normalized, '/') : null;
+    }
+
+    private function normalizeBridgeDeviceId(mixed $value): ?string
+    {
+        $normalized = trim((string) $value);
+
+        return $normalized !== '' ? $normalized : null;
+    }
+
+    private function defaultDeviceAccess(): array
+    {
+        return [
+            'printer' => [
+                'mode' => 'direct',
+                'bridge_base_url' => null,
+                'bridge_device_id' => null,
+            ],
+            'scale' => [
+                'mode' => 'direct',
+                'bridge_base_url' => null,
+                'bridge_device_id' => null,
+            ],
+        ];
     }
 
     private function scopedTerminalQuery()

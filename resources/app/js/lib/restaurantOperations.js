@@ -13,7 +13,7 @@ export async function fetchRestaurantOrderingContext() {
             meta: data?.meta || {},
         };
     } catch (error) {
-        throw new Error(resolveApiError(error, 'Nao foi possivel carregar mesas e fichas.'));
+        throw new Error(resolveApiError(error, 'Não foi possível carregar mesas e fichas.'));
     }
 }
 
@@ -25,7 +25,7 @@ export async function createRestaurantFicha(payload) {
             ficha: data?.ficha || null,
         };
     } catch (error) {
-        throw new Error(resolveApiError(error, 'Nao foi possivel criar a ficha.'));
+        throw new Error(resolveApiError(error, 'Não foi possível criar a ficha.'));
     }
 }
 
@@ -33,12 +33,12 @@ export async function submitRestaurantFichaOrder(fichaId, payload) {
     try {
         const { data } = await api.post(`/pos/restaurant/fichas/${fichaId}/orders`, payload);
         return {
-            message: String(data?.message || 'Pedido enviado para producao.'),
+            message: String(data?.message || 'Pedido enviado para produção.'),
             tickets: Array.isArray(data?.tickets) ? data.tickets : [],
             summary: data?.summary || null,
         };
     } catch (error) {
-        throw new Error(resolveApiError(error, 'Nao foi possivel enviar o pedido para producao.'));
+        throw new Error(resolveApiError(error, 'Não foi possível enviar o pedido para produção.'));
     }
 }
 
@@ -49,7 +49,7 @@ export async function fetchRestaurantFichaSummary(fichaId) {
             summary: data?.summary || null,
         };
     } catch (error) {
-        throw new Error(resolveApiError(error, 'Nao foi possivel carregar o resumo da ficha.'));
+        throw new Error(resolveApiError(error, 'Não foi possível carregar o resumo da ficha.'));
     }
 }
 
@@ -57,11 +57,11 @@ export async function saveRestaurantFichaObservation(fichaId, payload) {
     try {
         const { data } = await api.post(`/pos/restaurant/fichas/${fichaId}/observation`, payload || {});
         return {
-            message: String(data?.message || 'Observacao salva.'),
+            message: String(data?.message || 'Observação salva.'),
             summary: data?.summary || null,
         };
     } catch (error) {
-        throw new Error(resolveApiError(error, 'Nao foi possivel salvar a observacao da ficha.'));
+        throw new Error(resolveApiError(error, 'Não foi possível salvar a observacao da ficha.'));
     }
 }
 
@@ -73,7 +73,7 @@ export async function requestRestaurantFichaClose(fichaId) {
             summary: data?.summary || null,
         };
     } catch (error) {
-        throw new Error(resolveApiError(error, 'Nao foi possivel solicitar fechamento da ficha.'));
+        throw new Error(resolveApiError(error, 'Não foi possível solicitar fechamento da ficha.'));
     }
 }
 
@@ -81,11 +81,11 @@ export async function fetchRestaurantFichaConference(fichaId) {
     try {
         const { data } = await api.post(`/pos/restaurant/fichas/${fichaId}/conference`);
         return {
-            message: String(data?.message || 'Conferencia carregada.'),
+            message: String(data?.message || 'Conferência carregada.'),
             summary: data?.summary || null,
         };
     } catch (error) {
-        throw new Error(resolveApiError(error, 'Nao foi possivel carregar a conferencia da ficha.'));
+        throw new Error(resolveApiError(error, 'Não foi possível carregar a conferência da ficha.'));
     }
 }
 
@@ -105,7 +105,7 @@ export async function fetchRestaurantProductionTickets(params = {}) {
             meta: data?.meta || {},
         };
     } catch (error) {
-        throw new Error(resolveApiError(error, 'Nao foi possivel carregar tickets de producao.'));
+        throw new Error(resolveApiError(error, 'Não foi possível carregar tickets de produção.'));
     }
 }
 
@@ -120,6 +120,6 @@ export async function updateRestaurantProductionTicketStatus(ticketId, status) {
             ticket: data?.ticket || null,
         };
     } catch (error) {
-        throw new Error(resolveApiError(error, 'Nao foi possivel atualizar o status do ticket.'));
+        throw new Error(resolveApiError(error, 'Não foi possível atualizar o status do ticket.'));
     }
 }

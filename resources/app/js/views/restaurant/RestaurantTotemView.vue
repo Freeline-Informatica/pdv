@@ -19,7 +19,7 @@ function showToast(message) {
 }
 
 function handleOrderConfirmed(payload) {
-    showToast(`Pedido ${payload?.id || ''} enviado para producao.`);
+    showToast(`Pedido ${payload?.id || ''} enviado para produção.`);
 }
 </script>
 

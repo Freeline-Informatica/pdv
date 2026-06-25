@@ -31,6 +31,7 @@ const props = defineProps({
 const emit = defineEmits(['close', 'confirm-last-item', 'confirm-cancel-sale', 'confirm-cancel-adjustments']);
 
 const productCodeFieldRef = ref(null);
+const tableScrollRef = ref(null);
 const activeMode = ref('last-item');
 const filterDraft = reactive({
     productCode: '',
@@ -191,6 +192,17 @@ function selectLastVisibleRow() {
     selectedIndexes.value = [lastVisible.sourceIndex];
 }
 
+function focusSelectedRow() {
+    if (activeMode.value !== 'last-item' || selectedIndexes.value.length !== 1) return;
+
+    const selectedIndex = selectedIndexes.value[0];
+    const rowElement = tableScrollRef.value?.querySelector(`[data-source-index="${selectedIndex}"]`);
+    if (!(rowElement instanceof HTMLElement)) return;
+
+    rowElement.scrollIntoView({ block: 'center', inline: 'nearest' });
+    rowElement.focus({ preventScroll: true });
+}
+
 function resetDialogState() {
     activeMode.value = 'last-item';
     filterDraft.productCode = '';
@@ -214,6 +226,8 @@ function applyFilters() {
     if (activeMode.value === 'last-item' && selectedIndexes.value.length === 0) {
         selectLastVisibleRow();
     }
+
+    nextTick(focusSelectedRow);
 }
 
 function selectMode(modeId) {
@@ -222,6 +236,8 @@ function selectMode(modeId) {
     if (modeId === 'last-item' && selectedIndexes.value.length === 0) {
         selectLastVisibleRow();
     }
+
+    if (modeId === 'last-item') nextTick(focusSelectedRow);
 }
 
 function isRowSelected(sourceIndex) {
@@ -308,9 +324,7 @@ watch(
         if (!isOpen) return;
 
         resetDialogState();
-        nextTick(() => {
-            focusProductCodeField();
-        });
+        nextTick(focusSelectedRow);
     },
 );
 
@@ -322,6 +336,7 @@ watch(
 
         if (props.open && activeMode.value === 'last-item' && selectedIndexes.value.length === 0) {
             selectLastVisibleRow();
+            nextTick(focusSelectedRow);
         }
     },
 );
@@ -409,7 +424,7 @@ watch(
 
             <section class="cancel-dialog__body">
                 <div class="cancel-dialog__table-wrapper">
-                    <div class="cancel-dialog__table-scroll">
+                    <div ref="tableScrollRef" class="cancel-dialog__table-scroll">
                         <table class="ui-table cancel-dialog__table">
                             <thead>
                                 <tr>
@@ -449,6 +464,9 @@ watch(
                                     :key="row.sourceIndex"
                                     class="cancel-dialog__row"
                                     :class="{ 'is-selected': isRowSelected(row.sourceIndex) }"
+                                    :data-source-index="row.sourceIndex"
+                                    :aria-selected="isRowSelected(row.sourceIndex)"
+                                    tabindex="-1"
                                     @click="toggleRowSelection(row.sourceIndex)"
                                 >
                                     <td @click.stop>

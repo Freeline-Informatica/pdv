@@ -4,6 +4,7 @@ namespace Freeline\Pdv\Http\Controllers\Api;
 
 use Freeline\Pdv\Http\Controllers\Controller;
 use Freeline\Pdv\Models\Product;
+use Freeline\Pdv\Services\CatalogProductMirror;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -11,8 +12,17 @@ use Illuminate\Support\Str;
 
 class ProductsController extends Controller
 {
-    public function index(Request $request): JsonResponse
+    public function index(Request $request, CatalogProductMirror $catalogProductMirror): JsonResponse
     {
+        $limit = $request->filled('limit')
+            ? max(1, min($request->integer('limit'), 100))
+            : 100;
+
+        $catalogProductMirror->sync(
+            $request->string('search')->toString(),
+            $limit,
+        );
+
         $query = Product::query()->with('category:id,nome')->orderBy('nome');
 
         if ($request->boolean('active_only')) {
@@ -24,11 +34,15 @@ class ProductsController extends Controller
         }
 
         if ($request->filled('search')) {
-            $needle = mb_strtolower($request->string('search')->toString());
+            $needle = mb_strtolower(trim($request->string('search')->toString()));
             $query->where(function ($builder) use ($needle): void {
                 $builder->whereRaw('LOWER(nome) like ?', ["%{$needle}%"])
                     ->orWhereRaw('LOWER(COALESCE(codigo, \'\')) like ?', ["%{$needle}%"]);
             });
+        }
+
+        if ($request->filled('limit')) {
+            $query->limit($limit);
         }
 
         return response()->json($query->get());

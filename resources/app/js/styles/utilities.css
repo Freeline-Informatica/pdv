@@ -628,12 +628,17 @@ textarea {
 .pos-sidebar {
     background: var(--color-bg-sidebar);
     color: var(--color-text-inverse);
-    padding: var(--space-3);
+    padding: clamp(0.45rem, 0.9vh, var(--space-3));
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: clamp(0.3rem, 0.7vh, var(--space-2));
     align-items: stretch;
     min-width: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--color-text-sidebar) 34%, transparent) transparent;
 }
 
 .pos-sidebar > * {
@@ -646,6 +651,21 @@ textarea {
     width: 100%;
     min-width: 0;
     box-sizing: border-box;
+}
+
+.pos-sidebar::-webkit-scrollbar {
+    width: 0.42rem;
+}
+
+.pos-sidebar::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.pos-sidebar::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--color-text-sidebar) 36%, transparent);
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
 }
 
 .pos-sidebar .sidebar-item {
@@ -662,8 +682,8 @@ textarea {
 
 .pos-sidebar-actions {
     display: grid;
-    gap: var(--space-2);
-    margin-top: var(--space-2);
+    gap: clamp(0.35rem, 0.75vh, var(--space-2));
+    margin-top: clamp(0.25rem, 0.55vh, var(--space-2));
     width: 100%;
     min-width: 0;
 }
@@ -671,8 +691,8 @@ textarea {
 .pos-sidebar-footer-actions {
     margin-top: auto;
     display: grid;
-    gap: var(--space-2);
-    padding-top: var(--space-2);
+    gap: clamp(0.35rem, 0.75vh, var(--space-2));
+    padding-top: clamp(0.35rem, 0.75vh, var(--space-2));
     width: 100%;
     min-width: 0;
 }
@@ -682,14 +702,15 @@ textarea {
     max-width: 100%;
     box-sizing: border-box;
     display: grid;
-    grid-template-columns: 2rem minmax(0, 1fr);
+    grid-template-columns: 1.75rem minmax(0, 1fr);
     align-items: center;
-    column-gap: 0.65rem;
+    column-gap: 0.5rem;
     border-radius: var(--radius-sm);
     border: 1px solid color-mix(in srgb, var(--color-border-strong) 45%, transparent);
     background: color-mix(in srgb, var(--color-bg-sidebar-item) 72%, transparent);
     color: color-mix(in srgb, var(--color-text-sidebar) 88%, transparent);
-    padding: 0.55rem 0.6rem;
+    min-height: 2.75rem;
+    padding: clamp(0.35rem, 0.75vh, 0.5rem) 0.5rem;
     text-align: left;
     transition: all var(--transition-fast);
 }
@@ -709,21 +730,21 @@ textarea {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 2rem;
-    height: 2rem;
+    width: 1.75rem;
+    height: 1.75rem;
     border-radius: 999px;
     background: color-mix(in srgb, var(--color-bg-sidebar-item) 86%, var(--color-bg-sidebar));
 }
 
 .pos-sidebar-action-copy {
     display: grid;
-    gap: 0.08rem;
+    gap: 0.04rem;
     align-content: center;
     min-width: 0;
 }
 
 .pos-sidebar-action-key {
-    font-size: 0.69rem;
+    font-size: 0.64rem;
     line-height: 1;
     font-weight: 800;
     letter-spacing: 0.04em;
@@ -732,8 +753,13 @@ textarea {
 }
 
 .pos-sidebar-action-label {
-    font-size: 0.9rem;
-    line-height: 1.15;
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.82rem;
+    line-height: 1.1;
     font-weight: 700;
     color: inherit;
 }
@@ -757,7 +783,8 @@ textarea {
 }
 
 .pos-sidebar-action.is-compact {
-    padding: 0.45rem 0.55rem;
+    min-height: 2.55rem;
+    padding: clamp(0.3rem, 0.65vh, 0.42rem) 0.5rem;
 }
 
 .pos-sidebar-brand-title {

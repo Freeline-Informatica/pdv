@@ -2,27 +2,17 @@ const TOKEN_KEY = 'simples_pdv_token';
 const USER_KEY = 'simples_pdv_user';
 const CONTEXT_KEY = 'simples_pdv_context';
 const SETTINGS_ACCESS_KEY = 'simples_pdv_settings_access_key';
+const CANCEL_ACCESS_KEY = 'simples_pdv_cancel_access_key';
 const TERMINAL_SESSION_KEY = 'simples_pdv_terminal_session';
 
-const DEFAULT_RUNTIME = {
-    mode: 'standalone',
-    integrated: false,
-    erp_home_url: '/dashboard',
-    erp_login_url: '/login',
-    erp_logout_url: '/logout',
-    csrf_token: '',
-};
+function emitTerminalSessionUpdated(terminal) {
+    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') {
+        return;
+    }
 
-export function getRuntime() {
-    return {
-        ...DEFAULT_RUNTIME,
-        ...(window.__SIMPLS_PDV_RUNTIME__ || {}),
-    };
-}
-
-export function isIntegratedMode() {
-    const runtime = getRuntime();
-    return Boolean(runtime.integrated) || runtime.mode === 'erp';
+    window.dispatchEvent(new CustomEvent('pdv:terminal-session-updated', {
+        detail: terminal ?? null,
+    }));
 }
 
 export function getToken() {
@@ -138,6 +128,18 @@ export function clearSettingsAccessKey() {
     sessionStorage.removeItem(SETTINGS_ACCESS_KEY);
 }
 
+export function getCancelAccessKey() {
+    return sessionStorage.getItem(CANCEL_ACCESS_KEY);
+}
+
+export function setCancelAccessKey(accessKey) {
+    sessionStorage.setItem(CANCEL_ACCESS_KEY, accessKey);
+}
+
+export function clearCancelAccessKey() {
+    sessionStorage.removeItem(CANCEL_ACCESS_KEY);
+}
+
 export function getTerminalSession() {
     const rawTerminal = sessionStorage.getItem(TERMINAL_SESSION_KEY);
     if (!rawTerminal) return null;
@@ -151,10 +153,12 @@ export function getTerminalSession() {
 
 export function setTerminalSession(terminal) {
     sessionStorage.setItem(TERMINAL_SESSION_KEY, JSON.stringify(terminal));
+    emitTerminalSessionUpdated(terminal);
 }
 
 export function clearTerminalSession() {
     sessionStorage.removeItem(TERMINAL_SESSION_KEY);
+    emitTerminalSessionUpdated(null);
 }
 
 export function clearAuthData() {
@@ -162,79 +166,6 @@ export function clearAuthData() {
     clearUser();
     clearContext();
     clearSettingsAccessKey();
+    clearCancelAccessKey();
     clearTerminalSession();
-}
-
-export function canReturnToErp() {
-    return isIntegratedMode() && Boolean(getUser()?.can_access_erp);
-}
-
-export function resolvePdvExitLabel() {
-    return canReturnToErp() ? 'Voltar para o ERP' : 'Sair';
-}
-
-export function redirectToErpLogin() {
-    const runtime = getRuntime();
-    clearAuthData();
-    window.location.href = runtime.erp_login_url || '/login';
-}
-
-function postThenRedirect(action, token, redirectUrl) {
-    fetch(action, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-            'X-CSRF-TOKEN': token,
-            Accept: 'text/html,application/xhtml+xml',
-        },
-        body: new URLSearchParams({ _token: token }).toString(),
-    })
-        .catch(() => {})
-        .finally(() => {
-            window.location.href = redirectUrl;
-        });
-}
-
-function revokeCurrentPdvToken() {
-    const token = getToken();
-    if (!token) return;
-
-    fetch('/api/pdv/auth/logout', {
-        method: 'POST',
-        credentials: 'same-origin',
-        keepalive: true,
-        headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/json',
-        },
-    }).catch(() => {});
-}
-
-export function exitIntegratedPdv() {
-    if (!isIntegratedMode()) {
-        return false;
-    }
-
-    const runtime = getRuntime();
-    const userCanReturnToErp = canReturnToErp();
-    revokeCurrentPdvToken();
-    clearAuthData();
-
-    if (userCanReturnToErp) {
-        window.location.href = runtime.erp_home_url || '/dashboard';
-        return true;
-    }
-
-    const csrfToken = runtime.csrf_token
-        || document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')
-        || '';
-
-    if (!csrfToken) {
-        window.location.href = runtime.erp_login_url || '/login';
-        return true;
-    }
-
-    postThenRedirect(runtime.erp_logout_url || '/logout', csrfToken, runtime.erp_login_url || '/login');
-    return true;
 }

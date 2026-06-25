@@ -1,3 +1,5 @@
+import { normalizeTerminalDeviceAccess } from './deviceAccess.js';
+
 function normalizeLayoutMode(value) {
     const normalized = String(value || '').trim().toLowerCase();
     return ['varejo', 'restaurante', 'servicos'].includes(normalized) ? normalized : 'varejo';
@@ -34,11 +36,12 @@ export function normalizeTerminalSessionWithProfile(terminalSession, profile) {
     const nextRestaurantMode = nextLayoutMode === 'restaurante'
         ? normalizeRestaurantMode(profile?.pdv_restaurant_mode || terminalSession.restaurantMode)
         : null;
+    const deviceAccess = normalizeTerminalDeviceAccess(profile?.device_access || profile || terminalSession?.deviceAccess);
 
     return {
         ...terminalSession,
         layoutMode: nextLayoutMode,
         restaurantMode: nextRestaurantMode,
+        deviceAccess,
     };
 }
-

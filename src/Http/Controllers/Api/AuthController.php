@@ -74,7 +74,12 @@ class AuthController extends Controller
 
         return response()->json([
             'token' => $plainToken,
-            'user' => $this->userPayload($user, $tokenPayload['grupo_empresarial_id'] ?? null, $tokenPayload['estabelecimento_id'] ?? null),
+            'user' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'role' => $this->operatorRole($user),
+            ],
         ]);
     }
 
@@ -82,11 +87,12 @@ class AuthController extends Controller
     {
         $user = $request->user();
 
-        return response()->json($this->userPayload(
-            $user,
-            $request->attributes->get('grupo_empresarial_id'),
-            $request->attributes->get('estabelecimento_id'),
-        ));
+        return response()->json([
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'role' => $this->operatorRole($user),
+        ]);
     }
 
     public function authorizeSettings(Request $request): JsonResponse
@@ -207,23 +213,5 @@ class AuthController extends Controller
     private function operatorRole(?Authenticatable $operator): ?string
     {
         return $this->auditLogger->resolveUserRole($operator);
-    }
-
-    private function userPayload(Authenticatable $user, mixed $grupoEmpresarialId = null, mixed $estabelecimentoId = null): array
-    {
-        $hasOnlyPdvAccess = method_exists($user, 'hasOnlyPdvAccess')
-            ? $user->hasOnlyPdvAccess(
-                $grupoEmpresarialId ? (int) $grupoEmpresarialId : null,
-                $estabelecimentoId ? (int) $estabelecimentoId : null,
-            )
-            : false;
-
-        return [
-            'id' => $user->id,
-            'name' => $user->name,
-            'email' => $user->email,
-            'role' => $this->operatorRole($user),
-            'can_access_erp' => ! $hasOnlyPdvAccess,
-        ];
     }
 }

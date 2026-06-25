@@ -1,10 +1,5 @@
 import api from './api';
 
-function isEndpointMissing(error) {
-    const status = Number(error?.response?.status || 0);
-    return status === 404 || status === 405 || status === 501;
-}
-
 function resolveApiMessage(error, fallbackMessage) {
     return String(error?.response?.data?.message || fallbackMessage || 'Operação não concluída.');
 }
@@ -28,14 +23,6 @@ export async function fetchCommandCenterSnapshot() {
             message: String(data?.message || ''),
         };
     } catch (error) {
-        if (isEndpointMissing(error)) {
-            return {
-                source: 'fallback',
-                snapshot: null,
-                message: 'Endpoint de comandas não disponível. Usando base local temporária.',
-            };
-        }
-
         throw new Error(resolveApiMessage(error, 'Não foi possível carregar a central de comandas.'));
     }
 }
@@ -50,14 +37,6 @@ export async function reintegrateCommandCenter() {
             message: String(data?.message || 'Comandas reintegradas.'),
         };
     } catch (error) {
-        if (isEndpointMissing(error)) {
-            return {
-                source: 'fallback',
-                snapshot: null,
-                message: 'Reintegração local aplicada (endpoint não disponível).',
-            };
-        }
-
         throw new Error(resolveApiMessage(error, 'Não foi possível reintegrar as comandas.'));
     }
 }
@@ -71,14 +50,6 @@ export async function registerCommandTransfer(payload) {
             audit: data?.audit || null,
         };
     } catch (error) {
-        if (isEndpointMissing(error)) {
-            return {
-                source: 'fallback',
-                message: 'Transferência registrada localmente para continuidade operacional.',
-                audit: null,
-            };
-        }
-
         throw new Error(resolveApiMessage(error, 'Não foi possível registrar a transferência.'));
     }
 }
@@ -92,14 +63,6 @@ export async function registerCommandMerge(payload) {
             audit: data?.audit || null,
         };
     } catch (error) {
-        if (isEndpointMissing(error)) {
-            return {
-                source: 'fallback',
-                message: 'Junção registrada localmente para continuidade operacional.',
-                audit: null,
-            };
-        }
-
         throw new Error(resolveApiMessage(error, 'Não foi possível registrar a junção de fichas.'));
     }
 }
@@ -113,14 +76,6 @@ export async function registerCommandPrintAction(payload) {
             audit: data?.audit || null,
         };
     } catch (error) {
-        if (isEndpointMissing(error)) {
-            return {
-                source: 'fallback',
-                message: 'Impressão operacional registrada localmente. Não é documento fiscal.',
-                audit: null,
-            };
-        }
-
         throw new Error(resolveApiMessage(error, 'Não foi possível registrar a impressão operacional.'));
     }
 }
@@ -134,14 +89,6 @@ export async function registerCommandConference(payload) {
             audit: data?.audit || null,
         };
     } catch (error) {
-        if (isEndpointMissing(error)) {
-            return {
-                source: 'fallback',
-                message: 'Conferência registrada localmente para continuidade operacional.',
-                audit: null,
-            };
-        }
-
         throw new Error(resolveApiMessage(error, 'Não foi possível registrar a conferência.'));
     }
 }

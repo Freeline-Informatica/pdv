@@ -19,6 +19,12 @@ class PosTerminal extends Model
         'ativo',
         'pdv_layout_mode',
         'pdv_restaurant_mode',
+        'printer_connection_mode',
+        'printer_bridge_base_url',
+        'printer_bridge_device_id',
+        'scale_connection_mode',
+        'scale_bridge_base_url',
+        'scale_bridge_device_id',
     ];
 
     protected $casts = [

@@ -1,6 +1,5 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import api from '../lib/api';
-import { restaurantProductModifiers } from '../mock/restaurant';
 import {
     createRestaurantFicha,
     fetchRestaurantFichaConference,
@@ -173,9 +172,9 @@ function getFichaStatusLabel(status) {
     const map = {
         opened: 'Aberta',
         em_atendimento: 'Em atendimento',
-        aguardando_producao: 'Aguardando producao',
+        aguardando_produção: 'Aguardando produção',
         parcialmente_entregue: 'Parcialmente entregue',
-        em_conferencia: 'Em conferencia',
+        em_conferencia: 'Em conferência',
         aguardando_pagamento: 'Aguardando pagamento',
         paga: 'Paga',
         cancelada: 'Cancelada',
@@ -190,7 +189,7 @@ function getStatusVariant(status) {
     if (normalized === 'aguardando_pagamento' || normalized === 'cancelada' || normalized === 'paga' || normalized === 'closed') {
         return 'danger';
     }
-    if (normalized === 'aguardando_producao' || normalized === 'em_conferencia') {
+    if (normalized === 'aguardando_produção' || normalized === 'em_conferencia') {
         return 'warning';
     }
     if (normalized === 'em_atendimento' || normalized === 'opened' || normalized === 'parcialmente_entregue') {
@@ -295,7 +294,7 @@ export function useRestaurantOrderingCore(mode = 'comanda_garcom') {
     });
 
     function getProductModifiers(productId) {
-        return restaurantProductModifiers[productId] || { adicionais: [], removerIngredientes: [] };
+        return { adicionais: [], removerIngredientes: [] };
     }
 
     function computeSelectedOptions(productId, selectedOptionIds) {
@@ -600,7 +599,7 @@ export function useRestaurantOrderingCore(mode = 'comanda_garcom') {
         try {
             const fichaId = await ensureActiveFicha();
             if (!fichaId) {
-                throw new Error('Nao foi possivel identificar a ficha para envio do pedido.');
+                throw new Error('Não foi possível identificar a ficha para envio do pedido.');
             }
 
             const payload = {
@@ -638,10 +637,10 @@ export function useRestaurantOrderingCore(mode = 'comanda_garcom') {
             } else {
                 await loadFichaSummary(fichaId);
             }
-            successMessage.value = response.message || 'Pedido enviado para producao com sucesso.';
+            successMessage.value = response.message || 'Pedido enviado para produção com sucesso.';
             return result;
         } catch (requestError) {
-            error.value = String(requestError?.message || 'Nao foi possivel confirmar o pedido.');
+            error.value = String(requestError?.message || 'Não foi possível confirmar o pedido.');
             throw requestError;
         } finally {
             confirmingOrder.value = false;
@@ -680,7 +679,7 @@ export function useRestaurantOrderingCore(mode = 'comanda_garcom') {
             await refreshContext();
             await loadFichaSummary(selectedCommandId.value || null);
         } catch (requestError) {
-            error.value = String(requestError?.message || 'Nao foi possivel carregar o modulo de fichas.');
+            error.value = String(requestError?.message || 'Não foi possível carregar o modulo de fichas.');
         } finally {
             loading.value = false;
         }

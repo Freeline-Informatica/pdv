@@ -193,10 +193,45 @@ function normalizeCreateEditForm() {
     createEditModal.fieldErrors.newQuantity = '';
 }
 
-function openCreateModal() {
+function routePrefillProduct() {
+    const productId = String(route.query.product_id || '').trim();
+    if (!productId) return null;
+
+    return {
+        id: productId,
+        nome: String(route.query.product_name || 'Produto').trim() || 'Produto',
+        codigo: String(route.query.product_code || '').trim(),
+        estoque_atual: Number(route.query.stock || 0),
+        unidade: String(route.query.unit || 'UN').trim() || 'UN',
+    };
+}
+
+function upsertProductOption(product) {
+    if (!product?.id) return;
+
+    const productId = String(product.id);
+    const existingIndex = products.value.findIndex((item) => String(item.id) === productId);
+    if (existingIndex >= 0) {
+        products.value.splice(existingIndex, 1, { ...products.value[existingIndex], ...product });
+        return;
+    }
+
+    products.value = [product, ...products.value];
+}
+
+function openCreateModal(prefillProduct = null) {
     createEditModal.mode = 'create';
     createEditModal.recordId = null;
     normalizeCreateEditForm();
+
+    if (prefillProduct?.id) {
+        upsertProductOption(prefillProduct);
+        createEditModal.form.productId = String(prefillProduct.id);
+        createEditModal.form.tipo = 'correcao';
+        createEditModal.form.newQuantity = String(prefillProduct.estoque_atual ?? '');
+        createEditModal.open = true;
+        return;
+    }
 
     if (selectedCreateEditProduct.value) {
         createEditModal.form.newQuantity = String(selectedCreateEditProduct.value.estoque_atual || 0);
@@ -372,7 +407,12 @@ async function load() {
     }
 }
 
-onMounted(load);
+onMounted(async () => {
+    await load();
+    if (route.query.open === '1' || route.query.product_id) {
+        openCreateModal(routePrefillProduct());
+    }
+});
 </script>
 
 <template>

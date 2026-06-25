@@ -12,7 +12,8 @@ class TokenAuth
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $plainToken = $request->bearerToken();
+        $plainToken = $request->bearerToken()
+            ?: trim((string) $request->query('access_token', ''));
 
         if (! $plainToken) {
             return response()->json(['message' => 'Não autenticado.'], 401);

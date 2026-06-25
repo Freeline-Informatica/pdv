@@ -1,5 +1,5 @@
 <script setup>
-import { FileText, Keyboard, LogOut, Menu, Settings2, User, UserRoundCog, XCircle } from 'lucide-vue-next';
+import { FileText, Keyboard, LogOut, Menu, ReceiptText, Settings2, User, UserRoundCog, XCircle } from 'lucide-vue-next';
 import { computed } from 'vue';
 import AppBadge from '../ui/AppBadge.vue';
 
@@ -16,10 +16,6 @@ const props = defineProps({
         type: Boolean,
         default: false,
     },
-    logoutLabel: {
-        type: String,
-        default: 'Sair',
-    },
 });
 
 const quickActions = computed(() => [
@@ -29,6 +25,13 @@ const quickActions = computed(() => [
         label: 'Cancelamento',
         icon: XCircle,
         tone: 'danger',
+    },
+    {
+        id: 'cash-sales',
+        key: 'F3',
+        label: 'Vendas do caixa',
+        icon: ReceiptText,
+        tone: 'default',
     },
     {
         id: 'identify-customer',
@@ -60,7 +63,7 @@ const quickActions = computed(() => [
     },
 ]);
 
-const utilityActions = computed(() => [
+const utilityActions = [
     {
         id: 'open-shortcuts',
         label: 'Atalhos',
@@ -75,18 +78,19 @@ const utilityActions = computed(() => [
     },
     {
         id: 'logout',
-        label: props.logoutLabel,
+        label: 'Sair',
         icon: LogOut,
         tone: 'danger',
     },
-]);
+];
 
 const visibleUtilityActions = computed(() =>
-    utilityActions.value.filter((action) => props.showSettings || action.id !== 'open-settings'),
+    utilityActions.filter((action) => props.showSettings || action.id !== 'open-settings'),
 );
 
 const emit = defineEmits([
     'cancel-item',
+    'cash-sales',
     'identify-customer',
     'open-budget',
     'identify-seller',

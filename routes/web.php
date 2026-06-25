@@ -29,27 +29,17 @@ Route::get('/{any?}', function () {
 
         ApiToken::query()->create($tokenPayload);
 
-        $grupoEmpresarialId = $tokenPayload['grupo_empresarial_id'] ?? null;
-        $estabelecimentoId = $tokenPayload['estabelecimento_id'] ?? null;
-        $hasOnlyPdvAccess = method_exists($user, 'hasOnlyPdvAccess')
-            ? $user->hasOnlyPdvAccess(
-                $grupoEmpresarialId ? (int) $grupoEmpresarialId : null,
-                $estabelecimentoId ? (int) $estabelecimentoId : null,
-            )
-            : false;
-
         $bootstrap = [
             'token' => $plainToken,
             'context' => [
-                'grupo_empresarial_id' => $grupoEmpresarialId,
-                'estabelecimento_id' => $estabelecimentoId,
+                'grupo_empresarial_id' => $tokenPayload['grupo_empresarial_id'] ?? null,
+                'estabelecimento_id' => $tokenPayload['estabelecimento_id'] ?? null,
             ],
             'user' => [
                 'id' => $user->id,
                 'name' => $user->name,
                 'email' => $user->email,
                 'role' => method_exists($user, 'isSuperAdmin') && $user->isSuperAdmin() ? 'admin' : 'operador',
-                'can_access_erp' => ! $hasOnlyPdvAccess,
             ],
         ];
     }

@@ -121,6 +121,7 @@ function normalizeTable(table, status = COMMAND_CENTER_TAB.CLOSED) {
         id: String(table?.id || `table-${Math.random().toString(36).slice(2, 8)}`),
         code: String(table?.code || '--'),
         customerName: String(table?.customerName || `Mesa ${table?.code || '--'}`),
+        hasTable: table?.hasTable !== false,
         openedAtLabel: String(table?.openedAtLabel || '--'),
         closedAtLabel: String(table?.closedAtLabel || '--'),
         status: status === COMMAND_CENTER_TAB.OPENED ? COMMAND_STATUS.OPENED : COMMAND_STATUS.CLOSED,
@@ -130,176 +131,6 @@ function normalizeTable(table, status = COMMAND_CENTER_TAB.CLOSED) {
         itemsCount: tableItemsCount,
         total: tableTotal,
         commands: normalizedCommands,
-    };
-}
-
-function buildDefaultCommandSeed(catalogProducts = []) {
-    const source = catalogProducts.length
-        ? catalogProducts
-        : [
-            { id: 'fallback-1', nome: 'Produto não configurado', codigo: '0000', preco_venda: 0, unidade: 'UN' },
-        ];
-    const pick = (index) => source[index % source.length];
-
-    const closedTables = [
-        {
-            id: 'table-12',
-            code: '12',
-            customerName: 'Mesa 12',
-            closedAtLabel: 'Fechada às 21:10',
-            openedAtLabel: 'Aberta às 19:45',
-            waiterName: 'Carlos',
-            pendingFiscal: true,
-            commands: [
-                {
-                    id: 'cmd-1201',
-                    code: '1201',
-                    status: COMMAND_STATUS.PENDING_FISCAL,
-                    pendingFiscal: true,
-                    closedAtLabel: 'Fechada às 21:10',
-                    waiterName: 'Carlos',
-                    items: [
-                        createCommandItemFromProduct(pick(0), 2, { sellerName: 'Carlos', observation: 'Sem cebola' }),
-                        createCommandItemFromProduct(pick(1), 1, { sellerName: 'Carlos' }),
-                    ],
-                },
-                {
-                    id: 'cmd-1202',
-                    code: '1202',
-                    status: COMMAND_STATUS.PENDING_FISCAL,
-                    pendingFiscal: true,
-                    closedAtLabel: 'Fechada às 21:10',
-                    waiterName: 'Ana',
-                    items: [
-                        createCommandItemFromProduct(pick(2), 1, { sellerName: 'Ana', observation: 'Ponto bem passado' }),
-                    ],
-                },
-            ],
-        },
-        {
-            id: 'table-07',
-            code: '07',
-            customerName: 'Mesa 07',
-            closedAtLabel: 'Fechada às 20:46',
-            openedAtLabel: 'Aberta às 18:58',
-            waiterName: 'Juliana',
-            pendingFiscal: true,
-            commands: [
-                {
-                    id: 'cmd-0701',
-                    code: '0701',
-                    status: COMMAND_STATUS.PENDING_FISCAL,
-                    pendingFiscal: true,
-                    closedAtLabel: 'Fechada às 20:46',
-                    waiterName: 'Juliana',
-                    items: [
-                        createCommandItemFromProduct(pick(3), 1, { sellerName: 'Juliana' }),
-                        createCommandItemFromProduct(pick(4), 2, { sellerName: 'Juliana', observation: 'Sem gelo' }),
-                    ],
-                },
-            ],
-        },
-        {
-            id: 'table-18',
-            code: '18',
-            customerName: 'Mesa 18',
-            closedAtLabel: 'Fechada às 20:30',
-            openedAtLabel: 'Aberta às 19:12',
-            waiterName: 'Gustavo',
-            pendingFiscal: true,
-            commands: [
-                {
-                    id: 'cmd-1801',
-                    code: '1801',
-                    status: COMMAND_STATUS.PENDING_FISCAL,
-                    pendingFiscal: true,
-                    closedAtLabel: 'Fechada às 20:30',
-                    waiterName: 'Gustavo',
-                    items: [
-                        createCommandItemFromProduct(pick(5), 2, { sellerName: 'Gustavo' }),
-                        createCommandItemFromProduct(pick(6), 1, { sellerName: 'Gustavo' }),
-                    ],
-                },
-            ],
-        },
-    ];
-
-    const openedTables = [
-        {
-            id: 'table-03',
-            code: '03',
-            customerName: 'Mesa 03',
-            openedAtLabel: 'Aberta às 19:48',
-            waiterName: 'Fernanda',
-            commands: [
-                {
-                    id: 'cmd-0301',
-                    code: '0301',
-                    status: COMMAND_STATUS.OPENED,
-                    openedAtLabel: 'Aberta às 19:48',
-                    waiterName: 'Fernanda',
-                    items: [
-                        createCommandItemFromProduct(pick(2), 1, { sellerName: 'Fernanda' }),
-                        createCommandItemFromProduct(pick(0), 1, { sellerName: 'Fernanda', observation: 'Sem alho' }),
-                    ],
-                },
-            ],
-        },
-        {
-            id: 'table-09',
-            code: '09',
-            customerName: 'Mesa 09',
-            openedAtLabel: 'Aberta às 20:05',
-            waiterName: 'Bruno',
-            commands: [
-                {
-                    id: 'cmd-0901',
-                    code: '0901',
-                    status: COMMAND_STATUS.OPENED,
-                    openedAtLabel: 'Aberta às 20:05',
-                    waiterName: 'Bruno',
-                    items: [
-                        createCommandItemFromProduct(pick(1), 2, { sellerName: 'Bruno' }),
-                    ],
-                },
-                {
-                    id: 'cmd-0902',
-                    code: '0902',
-                    status: COMMAND_STATUS.OPENED,
-                    openedAtLabel: 'Aberta às 20:20',
-                    waiterName: 'Bruno',
-                    items: [
-                        createCommandItemFromProduct(pick(4), 1, { sellerName: 'Bruno', observation: 'Sem açúcar' }),
-                    ],
-                },
-            ],
-        },
-        {
-            id: 'table-14',
-            code: '14',
-            customerName: 'Mesa 14',
-            openedAtLabel: 'Aberta às 20:22',
-            waiterName: 'Equipe',
-            commands: [
-                {
-                    id: 'cmd-1401',
-                    code: '1401',
-                    status: COMMAND_STATUS.PROBLEM,
-                    openedAtLabel: 'Aberta às 20:22',
-                    waiterName: 'Equipe',
-                    tags: ['Atenção'],
-                    items: [
-                        createCommandItemFromProduct(pick(6), 3, { sellerName: 'Equipe' }),
-                        createCommandItemFromProduct(pick(5), 1, { sellerName: 'Equipe', observation: 'Pedido duplicado em conferência' }),
-                    ],
-                },
-            ],
-        },
-    ];
-
-    return {
-        openedTables,
-        closedTables,
     };
 }
 
@@ -336,7 +167,7 @@ export function useRestaurantCommandCenter(options = {}) {
     const state = reactive({
         loaded: false,
         loading: false,
-        dataSource: 'seed',
+        dataSource: 'api',
         activeTab: COMMAND_CENTER_TAB.CLOSED,
         searchQuery: '',
         error: '',
@@ -351,15 +182,10 @@ export function useRestaurantCommandCenter(options = {}) {
         mergeDialogOpen: false,
     });
 
-    function resolveCatalogProducts() {
-        const fromOptions = typeof options.getProducts === 'function' ? options.getProducts() : [];
-        return Array.isArray(fromOptions) ? fromOptions.filter(Boolean) : [];
-    }
-
-    function applySeed(seed) {
-        const openedTables = (Array.isArray(seed?.openedTables) ? seed.openedTables : [])
+    function applySnapshot(snapshot) {
+        const openedTables = (Array.isArray(snapshot?.openedTables) ? snapshot.openedTables : [])
             .map((table) => normalizeTable(table, COMMAND_CENTER_TAB.OPENED));
-        const closedTables = (Array.isArray(seed?.closedTables) ? seed.closedTables : [])
+        const closedTables = (Array.isArray(snapshot?.closedTables) ? snapshot.closedTables : [])
             .map((table) => normalizeTable(table, COMMAND_CENTER_TAB.CLOSED));
 
         state.openedTables = openedTables;
@@ -369,15 +195,14 @@ export function useRestaurantCommandCenter(options = {}) {
         state.loaded = true;
     }
 
-    function buildSeed() {
-        if (typeof options.seedBuilder === 'function') {
-            return options.seedBuilder(resolveCatalogProducts());
-        }
-
-        return buildDefaultCommandSeed(resolveCatalogProducts());
+    function createEmptySnapshot() {
+        return {
+            openedTables: [],
+            closedTables: [],
+        };
     }
 
-    async function fetchRemoteSeed() {
+    async function fetchRemoteSnapshot() {
         const apiClient = options.api;
         if (!apiClient || typeof apiClient.fetchSnapshot !== 'function') return null;
 
@@ -386,10 +211,6 @@ export function useRestaurantCommandCenter(options = {}) {
 
         if (response.source) {
             state.dataSource = String(response.source);
-        }
-
-        if (response.message && response.source === 'fallback') {
-            setError(String(response.message));
         }
 
         return response.snapshot || null;
@@ -402,15 +223,11 @@ export function useRestaurantCommandCenter(options = {}) {
         try {
             clearError();
 
-            const remoteSeed = await fetchRemoteSeed();
-            applySeed(remoteSeed || buildSeed());
-
-            if (!remoteSeed) {
-                state.dataSource = state.dataSource || 'seed';
-            }
+            const remoteSnapshot = await fetchRemoteSnapshot();
+            applySnapshot(remoteSnapshot || createEmptySnapshot());
         } catch (error) {
-            applySeed(buildSeed());
-            state.dataSource = 'seed';
+            applySnapshot(createEmptySnapshot());
+            state.dataSource = 'error';
             setError(error?.message || 'Não foi possível carregar a central de comandas.');
         } finally {
             state.loading = false;
@@ -440,25 +257,25 @@ export function useRestaurantCommandCenter(options = {}) {
         try {
             clearError();
 
-            let remoteSeed = null;
+            let remoteSnapshot = null;
             let message = '';
 
             if (apiClient && typeof apiClient.reintegrate === 'function') {
                 const response = await apiClient.reintegrate();
-                remoteSeed = response?.snapshot || null;
+                remoteSnapshot = response?.snapshot || null;
                 message = String(response?.message || '');
-                state.dataSource = String(response?.source || state.dataSource || 'seed');
+                state.dataSource = String(response?.source || state.dataSource || 'api');
             }
 
             resetData(true);
             state.activeTab = activeTab;
-            applySeed(remoteSeed || buildSeed());
+            applySnapshot(remoteSnapshot || createEmptySnapshot());
             return message;
         } catch (error) {
             resetData(true);
             state.activeTab = activeTab;
-            applySeed(buildSeed());
-            state.dataSource = 'seed';
+            applySnapshot(createEmptySnapshot());
+            state.dataSource = 'error';
             setError(error?.message || 'Não foi possível reintegrar as comandas.');
             return '';
         } finally {

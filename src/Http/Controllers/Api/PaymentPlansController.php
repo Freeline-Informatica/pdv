@@ -6,13 +6,12 @@ use Freeline\Pdv\Http\Controllers\Controller;
 use Freeline\Pdv\Models\PaymentPlan;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Schema;
 
 class PaymentPlansController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        if (! Schema::hasTable('payment_plans')) {
+        if (config('pdv.mode') === 'erp') {
             return response()->json([]);
         }
 

@@ -3,6 +3,7 @@
 namespace Freeline\Pdv\Http\Controllers\Api;
 
 use Freeline\Pdv\Http\Controllers\Controller;
+use Freeline\Pdv\Models\FiscalConfig;
 use Freeline\Pdv\Models\FiscalItemProfile;
 use Freeline\Pdv\Models\Produto;
 use Freeline\Pdv\Models\ProdutoAuditoria;
@@ -12,18 +13,25 @@ use Freeline\Pdv\Models\ProdutoEstoque;
 use Freeline\Pdv\Models\ProdutoFamilia;
 use Freeline\Pdv\Models\ProdutoPreco;
 use Freeline\Pdv\Models\UnidadeMedida;
+use Freeline\Pdv\Services\NotaAgilConfigurationException;
+use Freeline\Pdv\Services\NotaAgilFiscalService;
+use Freeline\Pdv\Support\Gtin;
+use Freeline\Pdv\Support\QuantityNormalizer;
+use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class CatalogProductsController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
         $query = Produto::query()
-            ->with(['unidadeMedida:id,unidade,descricao', 'familia:id,nome', 'classificacaoMercadologica:id,descricao', 'estoque:id,produto_id,quantidade,quantidade_minima'])
+            ->with(['unidadeMedida:id,unidade,descricao,decimais', 'familia:id,nome', 'classificacaoMercadologica:id,descricao', 'estoque:id,produto_id,quantidade,quantidade_minima'])
             ->withCount(['codigosBarras as codigos_barras_count', 'precos as precos_count'])
             ->orderBy('descricao');
 
@@ -40,7 +48,11 @@ class CatalogProductsController extends Controller
         $rows = $query->paginate((int) $request->integer('per_page', 15));
 
         $rows->getCollection()->transform(function (Produto $produto): array {
-            $activePrice = $produto->precos()->where('ativo', true)->orderBy('tipo')->first();
+            $activePrice = $produto->precos()
+                ->where('ativo', true)
+                ->orderByRaw('CASE WHEN valor > 0 THEN 0 ELSE 1 END')
+                ->orderBy('tipo')
+                ->first();
 
             return [
                 'id' => $produto->id,
@@ -64,8 +76,8 @@ class CatalogProductsController extends Controller
                     'id' => $produto->classificacaoMercadologica->id,
                     'descricao' => $produto->classificacaoMercadologica->descricao,
                 ] : null,
-                'estoque_atual' => $produto->estoque?->quantidade,
-                'estoque_minimo' => $produto->estoque?->quantidade_minima,
+                'estoque_atual' => $this->formatProdutoQuantity($produto, $produto->estoque?->quantidade),
+                'estoque_minimo' => $this->formatProdutoQuantity($produto, $produto->estoque?->quantidade_minima),
                 'preco_venda' => $activePrice?->valor,
                 'codigos_barras_count' => $produto->codigos_barras_count,
                 'precos_count' => $produto->precos_count,
@@ -79,7 +91,7 @@ class CatalogProductsController extends Controller
     public function supportData(): JsonResponse
     {
         return response()->json([
-            'unidades_medida' => UnidadeMedida::query()->where('status', true)->orderBy('unidade')->get(['id', 'unidade', 'descricao']),
+            'unidades_medida' => UnidadeMedida::query()->where('status', true)->orderBy('unidade')->get(['id', 'unidade', 'descricao', 'decimais']),
             'familias' => ProdutoFamilia::query()->where('ativo', true)->orderBy('nome')->get(['id', 'codigo', 'nome']),
             'classificacoes_mercadologicas' => ProdutoClassificacaoMercadologica::query()
                 ->where('ativo', true)
@@ -87,7 +99,7 @@ class CatalogProductsController extends Controller
                 ->orderBy('ordem')
                 ->orderBy('descricao')
                 ->get(['id', 'parent_id', 'codigo', 'descricao', 'nivel']),
-            'fiscal_item_profiles' => FiscalItemProfile::query()->where('active', true)->orderBy('display_name')->get(['id', 'display_name', 'item_type', 'ncm', 'cest']),
+            'fiscal_item_profiles' => FiscalItemProfile::query()->where('active', true)->orderBy('display_name')->get(['id', 'display_name', 'item_type', 'ncm', 'ncm_descricao', 'cest']),
             'tipos_preco' => [
                 ['id' => 'venda', 'label' => 'Venda'],
                 ['id' => 'atacado', 'label' => 'Atacado'],
@@ -103,6 +115,42 @@ class CatalogProductsController extends Controller
                 ['id' => 'servico', 'label' => 'Serviço'],
                 ['id' => 'composto', 'label' => 'Composto'],
             ],
+        ]);
+    }
+
+    public function searchNcms(Request $request, NotaAgilFiscalService $notaAgil): JsonResponse
+    {
+        $payload = $request->validate([
+            'search' => ['nullable', 'string', 'max:120'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:100'],
+        ]);
+
+        $search = trim((string) ($payload['search'] ?? ''));
+        $limit = (int) ($payload['limit'] ?? 50);
+        if ($search === '') {
+            return response()->json(['data' => []]);
+        }
+
+        $filters = array_filter([
+            'q' => $search,
+            'limit' => $limit,
+        ], static fn ($value): bool => $value !== null && $value !== '');
+
+        try {
+            $response = $notaAgil->searchNcms($filters, FiscalConfig::query()->first());
+        } catch (NotaAgilConfigurationException $exception) {
+            return response()->json(['message' => $exception->getMessage(), 'data' => []], 422);
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return response()->json([
+                'message' => 'Não foi possível consultar os NCMs no NotaAgil.',
+                'data' => [],
+            ], 502);
+        }
+
+        return response()->json([
+            'data' => $this->normalizeNcmRows($response, $limit),
         ]);
     }
 
@@ -221,7 +269,10 @@ class CatalogProductsController extends Controller
 
     private function validatePayload(Request $request, ?Produto $produto = null): array
     {
-        return $request->validate([
+        $this->sanitizeBarcodeInput($request);
+        $this->normalizeQuantityInputs($request);
+
+        $payload = $request->validate([
             'estabelecimento_id' => ['nullable', 'uuid'],
             'produto_mestre_id' => ['nullable', 'uuid'],
             'fiscal_item_profile_id' => ['nullable', 'uuid', 'exists:fiscal_item_profiles,id'],
@@ -247,6 +298,23 @@ class CatalogProductsController extends Controller
             'palavra_chave' => ['nullable', 'string', 'max:100'],
             'permite_fracionamento' => ['sometimes', 'boolean'],
             'atributos_logisticos' => ['nullable', 'array'],
+            'atributos_logisticos.fiscal_ncm' => ['nullable', 'string', 'max:20'],
+            'atributos_logisticos.fiscal_ncm_ex' => ['nullable', 'string', 'max:20'],
+            'atributos_logisticos.fiscal_cest' => ['nullable', 'string', 'max:20'],
+            'atributos_logisticos.fiscal_origem' => ['nullable', 'string', 'max:30'],
+            'atributos_logisticos.fiscal_tax_classification_code' => ['nullable', 'string', 'max:30'],
+            'atributos_logisticos.conta_contabil' => ['nullable', 'string', 'max:100'],
+            'atributos_logisticos.nr_contrato' => ['nullable', 'string', 'max:100'],
+            'atributos_logisticos.classificacoes_niveis_adicionais' => ['nullable', 'array'],
+            'atributos_logisticos.classificacoes_niveis_adicionais.*' => ['nullable', 'string', 'max:120'],
+            'atributos_logisticos.descricao_site' => ['nullable', 'string'],
+            'atributos_logisticos.descricao_detalhada' => ['nullable', 'string'],
+            'atributos_logisticos.empresas_vinculadas' => ['nullable', 'array'],
+            'atributos_logisticos.empresas_vinculadas.*' => ['nullable', 'string', 'max:120'],
+            'atributos_logisticos.clientes_vinculados' => ['nullable', 'array'],
+            'atributos_logisticos.clientes_vinculados.*' => ['nullable', 'string', 'max:120'],
+            'atributos_logisticos.estoque_detalhado' => ['nullable', 'array'],
+            'atributos_logisticos.gerencial_memoria' => ['nullable', 'array'],
             'atributos_logisticos.informacao_adicional' => ['nullable', 'array'],
             'atributos_logisticos.informacao_adicional.composicoes' => ['nullable', 'array'],
             'atributos_logisticos.informacao_adicional.fotos' => ['nullable', 'array'],
@@ -280,8 +348,32 @@ class CatalogProductsController extends Controller
             'codigos_barras' => ['nullable', 'array'],
             'codigos_barras.*.id' => ['nullable', 'uuid'],
             'codigos_barras.*.produto_apresentacao_id' => ['nullable', 'uuid', 'exists:produto_apresentacao,id'],
-            'codigos_barras.*.codigo' => ['required_with:codigos_barras', 'string', 'max:30'],
-            'codigos_barras.*.tipo_codigo' => ['nullable', 'string', 'max:20'],
+            'codigos_barras.*.codigo' => [
+                'required_with:codigos_barras',
+                'string',
+                'max:30',
+                function (string $attribute, mixed $value, Closure $fail) use ($request): void {
+                    $type = $this->barcodeRowFromAttribute($request, $attribute)['tipo_codigo'] ?? 'GTIN-13';
+                    $message = Gtin::validationMessage($value, $type);
+
+                    if ($message !== null) {
+                        $fail($message);
+                    }
+                },
+            ],
+            'codigos_barras.*.tipo_codigo' => [
+                'nullable',
+                'string',
+                'max:20',
+                Rule::in(Gtin::allowedTypes()),
+                function (string $attribute, mixed $value, Closure $fail) use ($request): void {
+                    $row = $this->barcodeRowFromAttribute($request, $attribute);
+
+                    if ($this->isBoxBarcodeRow($row) && Gtin::normalizeType((string) $value) === 'EAN-8') {
+                        $fail('Código de barras da caixa aceita somente GTIN-14 ou GTIN-13.');
+                    }
+                },
+            ],
             'codigos_barras.*.principal' => ['sometimes', 'boolean'],
             'codigos_barras.*.informacoes_complementares' => ['nullable', 'string', 'max:255'],
             'codigos_barras.*.ativo' => ['sometimes', 'boolean'],
@@ -295,6 +387,160 @@ class CatalogProductsController extends Controller
             'estoque.quantidade_minima_vendavel' => ['nullable', 'numeric'],
             'estoque.quantidade_alerta' => ['nullable', 'numeric'],
         ]);
+
+        return $this->normalizeFiscalPayload($payload);
+    }
+
+    private function normalizeQuantityInputs(Request $request): void
+    {
+        $unit = UnidadeMedida::query()->find($request->input('unidade_medida_id'));
+        $allowsFractional = $this->unitAllowsFractionalQuantity($unit) || $request->boolean('permite_fracionamento');
+        $payload = $request->all();
+        $errors = [];
+        $manualReorderPoint = $this->hasManualReorderPointOverride($payload);
+
+        foreach ($this->quantityPayloadPaths() as $path) {
+            if (! Arr::has($payload, $path)) {
+                continue;
+            }
+
+            if ($path === 'atributos_logisticos.estoque_detalhado.ponto_pedido' && ! $manualReorderPoint) {
+                continue;
+            }
+
+            $normalized = QuantityNormalizer::normalize(Arr::get($payload, $path), $allowsFractional);
+            if (! $normalized['valid']) {
+                $errors[$path] = [$normalized['message']];
+                continue;
+            }
+
+            Arr::set($payload, $path, $normalized['value']);
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
+
+        $this->syncCalculatedReorderPoint($payload, $allowsFractional);
+
+        $request->replace($payload);
+    }
+
+    private function quantityPayloadPaths(): array
+    {
+        return [
+            'estoque.quantidade',
+            'estoque.quantidade_minima',
+            'estoque.quantidade_maxima',
+            'estoque.quantidade_minima_vendavel',
+            'estoque.quantidade_alerta',
+            'atributos_logisticos.estoque_detalhado.consumo_médio_diario',
+            'atributos_logisticos.estoque_detalhado.estoque_segurança',
+            'atributos_logisticos.estoque_detalhado.lote_minimo_compra',
+            'atributos_logisticos.estoque_detalhado.ponto_pedido',
+        ];
+    }
+
+    private function unitAllowsFractionalQuantity(?UnidadeMedida $unit): bool
+    {
+        if (! $unit) {
+            return false;
+        }
+
+        if ((int) ($unit->decimais ?? 0) > 0) {
+            return true;
+        }
+
+        return in_array(mb_strtoupper((string) $unit->unidade), ['KG', 'G', 'GR', 'L', 'LT', 'ML', 'M', 'MT', 'M2', 'M3'], true);
+    }
+
+    private function hasManualReorderPointOverride(array $payload): bool
+    {
+        return filter_var(
+            Arr::get($payload, 'atributos_logisticos.estoque_detalhado.ponto_pedido_override', false),
+            FILTER_VALIDATE_BOOLEAN,
+        );
+    }
+
+    private function syncCalculatedReorderPoint(array &$payload, bool $allowsFractional): void
+    {
+        if ($this->hasManualReorderPointOverride($payload)) {
+            return;
+        }
+
+        $dailyConsumption = $this->quantityPayloadNumber(Arr::get($payload, 'atributos_logisticos.estoque_detalhado.consumo_médio_diario'));
+        $leadDays = $this->quantityPayloadNumber(Arr::get($payload, 'atributos_logisticos.estoque_detalhado.lead_time_compra'))
+            + $this->quantityPayloadNumber(Arr::get($payload, 'atributos_logisticos.estoque_detalhado.lead_time_entrega'))
+            + $this->quantityPayloadNumber(Arr::get($payload, 'atributos_logisticos.estoque_detalhado.lead_time_recebimento'));
+        $safetyStock = $this->quantityPayloadNumber(Arr::get($payload, 'atributos_logisticos.estoque_detalhado.estoque_segurança'));
+        $calculated = max(0, ($dailyConsumption * max(0, $leadDays)) + $safetyStock);
+        $calculated = $allowsFractional ? round($calculated, 3) : ceil($calculated);
+
+        $normalized = QuantityNormalizer::normalize($calculated, $allowsFractional);
+        Arr::set($payload, 'atributos_logisticos.estoque_detalhado.ponto_pedido', $normalized['value'] ?? '0');
+    }
+
+    private function quantityPayloadNumber(mixed $value): float
+    {
+        if (is_int($value) || is_float($value)) {
+            return is_finite((float) $value) ? (float) $value : 0.0;
+        }
+
+        $text = trim((string) $value);
+        $normalized = str_contains($text, ',')
+            ? str_replace(',', '.', str_replace('.', '', $text))
+            : preg_replace('/[^\d.-]/', '', $text);
+
+        return is_numeric($normalized) ? (float) $normalized : 0.0;
+    }
+
+    private function formatProdutoQuantity(Produto $produto, mixed $value): ?string
+    {
+        return QuantityNormalizer::formatForDisplay(
+            $value,
+            (bool) $produto->permite_fracionamento || $this->unitAllowsFractionalQuantity($produto->unidadeMedida),
+        );
+    }
+
+    private function sanitizeBarcodeInput(Request $request): void
+    {
+        if (! $request->has('codigos_barras') || ! is_array($request->input('codigos_barras'))) {
+            return;
+        }
+
+        $request->merge([
+            'codigos_barras' => collect($request->input('codigos_barras'))
+                ->map(function ($row) {
+                    if (! is_array($row)) {
+                        return $row;
+                    }
+
+                    $row['codigo'] = Gtin::sanitize($row['codigo'] ?? '');
+
+                    if (array_key_exists('tipo_codigo', $row)) {
+                        $row['tipo_codigo'] = Gtin::normalizeType((string) $row['tipo_codigo']);
+                    }
+
+                    return $row;
+                })
+                ->all(),
+        ]);
+    }
+
+    private function barcodeRowFromAttribute(Request $request, string $attribute): array
+    {
+        if (! preg_match('/^codigos_barras\.(\d+)\./', $attribute, $matches)) {
+            return [];
+        }
+
+        $row = $request->input("codigos_barras.{$matches[1]}", []);
+
+        return is_array($row) ? $row : [];
+    }
+
+    private function isBoxBarcodeRow(array $row): bool
+    {
+        return mb_stripos((string) ($row['informacoes_complementares'] ?? ''), 'caixa') !== false;
     }
 
     private function persistProduto(Produto $produto, array $payload): void
@@ -305,6 +551,83 @@ class CatalogProductsController extends Controller
         $this->syncPrecos($produto, $payload['precos'] ?? []);
         $this->syncCodigosBarras($produto, $payload['codigos_barras'] ?? []);
         $this->syncEstoque($produto, $payload['estoque'] ?? null);
+    }
+
+    private function normalizeFiscalPayload(array $payload): array
+    {
+        if (! array_key_exists('atributos_logisticos', $payload) || ! is_array($payload['atributos_logisticos'])) {
+            return $payload;
+        }
+
+        $payload['atributos_logisticos']['fiscal_ncm'] = $this->digitsOrNull(
+            $payload['atributos_logisticos']['fiscal_ncm'] ?? null,
+        );
+
+        return $payload;
+    }
+
+    private function digitsOrNull(mixed $value): ?string
+    {
+        $digits = preg_replace('/\D+/', '', (string) $value);
+
+        return $digits !== '' ? $digits : null;
+    }
+
+    private function normalizeNcmRows(array $response, int $limit): array
+    {
+        $rows = $response;
+
+        foreach (['data', 'items', 'results', 'records'] as $key) {
+            $candidate = data_get($response, $key);
+            if (is_array($candidate)) {
+                $rows = $candidate;
+                break;
+            }
+        }
+
+        if (Arr::isAssoc($rows)) {
+            foreach (['items', 'results', 'records', 'data'] as $key) {
+                $candidate = data_get($rows, $key);
+                if (is_array($candidate)) {
+                    $rows = $candidate;
+                    break;
+                }
+            }
+        }
+
+        return collect(is_array($rows) ? $rows : [])
+            ->filter(fn ($row): bool => is_array($row))
+            ->map(function (array $row): array {
+                $code = (string) (
+                    data_get($row, 'ncm')
+                    ?: data_get($row, 'code')
+                    ?: data_get($row, 'codigo')
+                    ?: data_get($row, 'value')
+                    ?: ''
+                );
+                $description = (string) (
+                    data_get($row, 'description')
+                    ?: data_get($row, 'descricao')
+                    ?: data_get($row, 'ncm_descricao')
+                    ?: data_get($row, 'name')
+                    ?: data_get($row, 'label')
+                    ?: ''
+                );
+
+                $normalizedCode = $this->digitsOrNull($code);
+
+                return [
+                    'id' => (string) (data_get($row, 'id') ?: $normalizedCode ?: trim($code)),
+                    'ncm' => $normalizedCode ?: trim($code),
+                    'ncm_descricao' => trim($description),
+                    'display_name' => trim($description) ?: trim($code),
+                    'cest' => (string) (data_get($row, 'cest') ?: ''),
+                ];
+            })
+            ->filter(fn (array $row): bool => $row['ncm'] !== '')
+            ->take($limit)
+            ->values()
+            ->all();
     }
 
     private function syncPrecos(Produto $produto, array $precos): void
@@ -425,7 +748,7 @@ class CatalogProductsController extends Controller
             return null;
         }
 
-        $produto->loadMissing(['precos', 'codigosBarras', 'estoque', 'auditorias.user:id,name']);
+        $produto->loadMissing(['unidadeMedida:id,unidade,decimais', 'precos', 'codigosBarras', 'estoque', 'auditorias.user:id,name']);
 
         return [
             'id' => $produto->id,
@@ -474,13 +797,13 @@ class CatalogProductsController extends Controller
             ])->values()->all(),
             'estoque' => $produto->estoque ? [
                 'id' => $produto->estoque->id,
-                'quantidade' => $produto->estoque->quantidade,
-                'quantidade_minima' => $produto->estoque->quantidade_minima,
-                'quantidade_maxima' => $produto->estoque->quantidade_maxima,
+                'quantidade' => $this->formatProdutoQuantity($produto, $produto->estoque->quantidade),
+                'quantidade_minima' => $this->formatProdutoQuantity($produto, $produto->estoque->quantidade_minima),
+                'quantidade_maxima' => $this->formatProdutoQuantity($produto, $produto->estoque->quantidade_maxima),
                 'numero_lote' => $produto->estoque->numero_lote,
                 'reduzir_estoque' => (bool) $produto->estoque->reduzir_estoque,
-                'quantidade_minima_vendavel' => $produto->estoque->quantidade_minima_vendavel,
-                'quantidade_alerta' => $produto->estoque->quantidade_alerta,
+                'quantidade_minima_vendavel' => $this->formatProdutoQuantity($produto, $produto->estoque->quantidade_minima_vendavel),
+                'quantidade_alerta' => $this->formatProdutoQuantity($produto, $produto->estoque->quantidade_alerta),
             ] : null,
             'auditoria' => $produto->auditorias->map(fn (ProdutoAuditoria $audit) => [
                 'id' => $audit->id,

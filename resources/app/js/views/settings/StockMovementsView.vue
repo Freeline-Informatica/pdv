@@ -581,7 +581,7 @@ onMounted(load);
 
 .kardex-field-input {
     min-height: 2.45rem;
-    padding-left: 2.2rem;
+    padding-left: 2.65rem;
     font-size: 0.9rem;
 }
 

@@ -19,9 +19,9 @@ const toastVisible = ref(false);
 const toastMessage = ref('');
 
 const sectorTitle = computed(() => {
-    if (board.sectorFilter.value === 'cozinha') return 'Producao - Cozinha';
-    if (board.sectorFilter.value === 'bar') return 'Producao - Bar';
-    return 'Producao - Cozinha e Bar';
+    if (board.sectorFilter.value === 'cozinha') return 'Produção - Cozinha';
+    if (board.sectorFilter.value === 'bar') return 'Produção - Bar';
+    return 'Produção - Cozinha e Bar';
 });
 
 const allowedModes = computed(() => {
@@ -76,24 +76,24 @@ async function handleAdvance(ticketId, nextStatus) {
         await board.updateTicketStatus(ticketId, nextStatus);
         showToast(`Ticket ${ticketId} movido para ${nextStatus.replace('_', ' ')}.`);
     } catch (requestError) {
-        showToast(String(requestError?.message || 'Nao foi possivel atualizar o ticket.'));
+        showToast(String(requestError?.message || 'Não foi possível atualizar o ticket.'));
     }
 }
 
 function handleReprint(ticketId) {
-    showToast(`Reimpressao solicitada para ${ticketId}.`);
+    showToast(`Reimpressão solicitada para ${ticketId}.`);
 }
 </script>
 
 <template>
-    <RestaurantModeGuard :allowed-modes="allowedModes" feature-label="Tela de producao (Cozinha/Bar)">
+    <RestaurantModeGuard :allowed-modes="allowedModes" feature-label="Tela de produção (Cozinha/Bar)">
         <RestaurantTerminalShell
             :title="sectorTitle"
             subtitle="KDS com acompanhamento de tickets por status e destaque de atraso."
             :mode-label="restaurantModeLabel"
         >
             <RestaurantHeader
-                title="Fila de producao"
+                title="Fila de produção"
                 subtitle="Acompanhe pedidos novos, em preparo, prontos e entregues."
                 status-label="KDS"
             />

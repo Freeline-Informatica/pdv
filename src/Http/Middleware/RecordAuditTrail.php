@@ -354,6 +354,8 @@ class RecordAuditTrail
             'admin_pin',
             'senha_hash',
             'token',
+            'notagil_token',
+            'notagil_webhook_secret',
             'settings_access_key',
         ]);
 
@@ -405,7 +407,7 @@ class RecordAuditTrail
         $sanitized = [];
 
         foreach ($payload as $key => $value) {
-            if (in_array($key, ['password', 'admin_password', 'pin', 'admin_pin', 'senha_hash', 'token'], true)) {
+            if (in_array($key, ['password', 'admin_password', 'pin', 'admin_pin', 'senha_hash', 'token', 'notagil_token', 'notagil_webhook_secret'], true)) {
                 continue;
             }
 

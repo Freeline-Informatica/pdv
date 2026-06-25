@@ -148,7 +148,6 @@ return new class extends Migration {
             $table->decimal('taxa_operadora', 10, 2)->nullable()->default(0);
             $table->integer('recebe_em')->nullable()->default(1);
             $table->integer('parc_sugerida')->nullable()->default(1);
-            $table->integer('parc_maximo')->nullable()->default(1);
             $table->boolean('ativo')->default(true);
             $table->integer('parc_inicial')->default(1);
             $table->integer('parc_final')->default(1);

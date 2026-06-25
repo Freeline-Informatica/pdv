@@ -32,6 +32,16 @@ return [
         'payment_methods' => Freeline\Pdv\Standalone\StandalonePaymentMethodRepository::class,
     ],
 
+    'notagil' => [
+        'base_url' => env('NOTAGIL_BASE_URL', 'https://api.notagil.com.br/api/v1/integrations'),
+        'token' => env('NOTAGIL_TOKEN'),
+        'webhook_url' => env('NOTAGIL_WEBHOOK_URL'),
+        'webhook_secret' => env('NOTAGIL_WEBHOOK_SECRET'),
+        'webhook_tolerance_seconds' => (int) env('NOTAGIL_WEBHOOK_TOLERANCE_SECONDS', 300),
+        'timeout' => (int) env('NOTAGIL_TIMEOUT_SECONDS', 30),
+        'wait_seconds' => (int) env('NOTAGIL_WAIT_SECONDS', 8),
+    ],
+
     'tables' => [
         'users' => env('PDV_USERS_TABLE', 'users'),
         'products' => env('PDV_PRODUCTS_TABLE', 'products'),

@@ -38,10 +38,10 @@ const navItemsByMode = Object.freeze({
         { to: '/pdv/restaurante/garcom', label: 'Garcom', icon: ShoppingBag },
     ],
     comanda_cozinha: [
-        { to: '/pdv/restaurante/producao/cozinha', label: 'Producao cozinha', icon: CookingPot },
+        { to: '/pdv/restaurante/producao/cozinha', label: 'Produção cozinha', icon: CookingPot },
     ],
     comanda_bar: [
-        { to: '/pdv/restaurante/producao/bar', label: 'Producao bar', icon: CookingPot },
+        { to: '/pdv/restaurante/producao/bar', label: 'Produção bar', icon: CookingPot },
     ],
     caixa: [],
 });
@@ -75,7 +75,7 @@ function isNavActive(targetPath) {
                     <RouterLink v-if="isAdminUser" to="/configuracoes">
                         <AppButton variant="ghost">
                             <Settings2 class="h-4 w-4" aria-hidden="true" />
-                            Configuracoes
+                            Configurações
                         </AppButton>
                     </RouterLink>
                     <RouterLink to="/">

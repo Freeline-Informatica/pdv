@@ -18,6 +18,7 @@ import {
 } from 'lucide-vue-next';
 import AppModal from '../ui/AppModal.vue';
 import { getTerminalSession } from '../../lib/auth';
+import PosLocalPrinterControl from './PosLocalPrinterControl.vue';
 
 defineProps({
     open: {
@@ -31,7 +32,7 @@ const emit = defineEmits(['close']);
 const columnA = [
     { key: 'F1', label: 'Finaliza a venda', icon: ReceiptText },
     { key: 'F2', label: 'Abrir cancelamento', icon: Trash2 },
-    { key: 'F3', label: 'Cancelar venda', icon: X },
+    { key: 'F3', label: 'Vendas do caixa', icon: X },
     { key: 'A', label: 'Ajuda', icon: HelpCircle },
     { key: 'M', label: 'Mesa/Conta', icon: ClipboardList },
     { key: 'R', label: 'Recebimento carnê', icon: Wallet },
@@ -51,8 +52,9 @@ const columnB = [
 const adjustments = [
     { key: '+', label: 'Acréscimo no item (valor ou %)', icon: Plus },
     { key: 'D', label: 'Desconto no item (valor ou %)', icon: Percent },
+    { key: 'Ctrl + B', label: 'Abrir aferição de balança', icon: Search },
     { key: 'Ctrl + *', label: 'Abrir multiplicador de quantidade', icon: X },
-    { key: '*N', label: 'Aplicar multiplicador direto na busca (ex.: *4)', icon: X },
+    { key: 'N*', label: 'Aplicar multiplicador direto na busca (ex.: 4*)', icon: X },
 ];
 
 const navigation = [
@@ -67,7 +69,7 @@ const restaurantLinks = [
     { to: '/pdv/restaurante/auto-atendimento', label: 'Autoatendimento de mesa' },
     { to: '/pdv/restaurante/totem', label: 'Totem' },
     { to: '/pdv/restaurante/garcom', label: 'Comanda do garcom' },
-    { to: '/pdv/restaurante/producao', label: 'Producao (KDS)' },
+    { to: '/pdv/restaurante/producao', label: 'Produção (KDS)' },
 ];
 </script>
 
@@ -82,6 +84,8 @@ const restaurantLinks = [
                 Consulta rápida de atalhos do teclado para operação de caixa.
             </p>
         </div>
+
+        <PosLocalPrinterControl />
 
         <div class="shortcuts-grid">
             <section class="shortcuts-column">

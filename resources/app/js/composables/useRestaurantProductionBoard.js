@@ -69,7 +69,7 @@ export function useRestaurantProductionBoard(initialSector = 'todos') {
             });
             tickets.value = response.tickets;
         } catch (requestError) {
-            error.value = String(requestError?.message || 'Nao foi possivel carregar a fila de producao.');
+            error.value = String(requestError?.message || 'Não foi possível carregar a fila de produção.');
             tickets.value = [];
         } finally {
             loading.value = false;

@@ -1,5 +1,6 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { getUser } from '../../lib/auth';
 import SaleReceiptItem from './SaleReceiptItem.vue';
 
 const props = defineProps({
@@ -20,6 +21,10 @@ const props = defineProps({
         default: null,
     },
 });
+
+const tableWrapRef = ref(null);
+const issueDate = ref(new Date());
+let issueClockTimeout = null;
 
 function roundMoney(value) {
     return Math.round((Number(value) || 0) * 100) / 100;
@@ -46,10 +51,10 @@ const issueDateLabel = computed(() =>
         year: 'numeric',
         hour: '2-digit',
         minute: '2-digit',
-    }).format(new Date()),
+    }).format(issueDate.value),
 );
 
-const documentNumber = computed(() => String(Math.max(props.items.length, 0)).padStart(6, '0'));
+const operatorName = computed(() => String(getUser()?.name || 'Não identificado'));
 
 const documentTotal = computed(() =>
     roundMoney(
@@ -78,6 +83,63 @@ function resolveItemKey(item) {
     const normalizedPrice = String(Number(item?.preco_venda ?? 0));
     return `${normalizedId}:${normalizedAdjustment}:${normalizedPrice}`;
 }
+
+function resolveItemState(item, index) {
+    return [
+        resolveItemKey(item),
+        index,
+        Number(item?.qty || 0),
+        Number(item?.preco_venda || 0),
+        String(item?.adjustment_signature || ''),
+    ].join(':');
+}
+
+const receiptItemsState = computed(() => props.items.map(resolveItemState));
+
+function scrollReceiptToItem(index) {
+    const scrollContainer = tableWrapRef.value;
+    if (!(scrollContainer instanceof HTMLElement)) return;
+
+    const row = scrollContainer.querySelector(`[data-receipt-index="${index}"]`);
+    if (!(row instanceof HTMLElement)) return;
+
+    const rowBottom = row.offsetTop + row.offsetHeight;
+    const targetTop = Math.max(0, rowBottom - scrollContainer.clientHeight);
+    scrollContainer.scrollTo({ top: targetTop, behavior: 'smooth' });
+}
+
+watch(
+    receiptItemsState,
+    (currentState, previousState = []) => {
+        if (!currentState.length) {
+            if (tableWrapRef.value instanceof HTMLElement) tableWrapRef.value.scrollTop = 0;
+            return;
+        }
+
+        let changedIndex = currentState.length - 1;
+        if (currentState.length === previousState.length) {
+            const detectedIndex = currentState.findIndex((state, index) => state !== previousState[index]);
+            if (detectedIndex >= 0) changedIndex = detectedIndex;
+        }
+
+        nextTick(() => scrollReceiptToItem(changedIndex));
+    },
+    { immediate: true },
+);
+
+function scheduleIssueClockUpdate() {
+    const now = new Date();
+    issueDate.value = now;
+    const millisecondsUntilNextMinute = 60_000 - (now.getSeconds() * 1000 + now.getMilliseconds()) + 25;
+    issueClockTimeout = window.setTimeout(scheduleIssueClockUpdate, millisecondsUntilNextMinute);
+}
+
+onMounted(scheduleIssueClockUpdate);
+
+onBeforeUnmount(() => {
+    if (issueClockTimeout) window.clearTimeout(issueClockTimeout);
+    issueClockTimeout = null;
+});
 </script>
 
 <template>
@@ -96,12 +158,12 @@ function resolveItemKey(item) {
             </section>
 
             <section class="sale-receipt-paper__meta">
-                <p><span>Número:</span> <strong>{{ documentNumber }}</strong></p>
+                <p><span>Operador:</span> <strong>{{ operatorName }}</strong></p>
                 <p><span>Emissão:</span> <strong>{{ issueDateLabel }}</strong></p>
                 <p><span>Itens:</span> <strong>{{ items.length }}</strong></p>
             </section>
 
-            <div class="sale-receipt-paper__table-wrap">
+            <div ref="tableWrapRef" class="sale-receipt-paper__table-wrap">
                 <table class="sale-receipt-paper__table">
                     <thead>
                         <tr>
@@ -126,6 +188,7 @@ function resolveItemKey(item) {
                             :index="index"
                             :item="item"
                             :format-currency="formatCurrency"
+                            :data-receipt-index="index"
                         />
                     </tbody>
                 </table>

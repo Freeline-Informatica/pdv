@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { ArrowLeft, LogOut, Monitor } from 'lucide-vue-next';
-import { clearAuthData, exitIntegratedPdv, resolvePdvExitLabel } from '../lib/auth';
+import { clearAuthData } from '../lib/auth';
 import { useRoute, useRouter } from 'vue-router';
 import api from '../lib/api';
 import AppShell from '../components/layout/AppShell.vue';
@@ -16,7 +16,6 @@ const sidebarCollapsed = ref(true);
 const companyLayoutMode = ref('');
 const companyLayoutLoaded = ref(false);
 const isManagedByErp = ref(false);
-const exitLabel = computed(() => resolvePdvExitLabel());
 
 const navigationSectionsBase = [
     {
@@ -131,6 +130,12 @@ const navigationSectionsBase = [
                 description: 'Abertura, movimentações e fechamento',
                 icon: 'wallet-cards',
             },
+            {
+                path: '/configuracoes/clientes',
+                label: 'Clientes',
+                description: 'Cadastro usado no checkout',
+                icon: 'users-round',
+            },
         ],
     },
     {
@@ -241,8 +246,6 @@ async function loadCompanyLayoutMode() {
 }
 
 function logout() {
-    if (exitIntegratedPdv()) return;
-
     clearAuthData();
     router.push('/login');
 }
@@ -294,7 +297,7 @@ onBeforeUnmount(() => {
                     </AppButton>
                     <AppButton variant="ghost" @click="logout">
                         <LogOut class="h-4 w-4" aria-hidden="true" />
-                        {{ exitLabel }}
+                        Sair
                     </AppButton>
                 </div>
             </AppTopbar>
@@ -305,7 +308,6 @@ onBeforeUnmount(() => {
                 :sections="navigationSections"
                 :active-path="route.path"
                 :collapsed="sidebarCollapsed"
-                :exit-label="exitLabel"
                 @navigate="router.push($event)"
                 @toggle="sidebarCollapsed = !sidebarCollapsed"
                 @go-pos="goToPos"

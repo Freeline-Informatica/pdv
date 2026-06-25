@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { Monitor, Pencil, Plus, Trash2, X } from 'lucide-vue-next';
 import api from '../../lib/api';
 import { getTerminalSession } from '../../lib/auth';
+import { normalizeBridgeBaseUrl, normalizeBridgeDeviceId, normalizeConnectionMode, normalizeTerminalDeviceAccess } from '../../lib/deviceAccess';
 import SettingsPageHeader from '../../components/settings/SettingsPageHeader.vue';
 import AppBadge from '../../components/ui/AppBadge.vue';
 import AppButton from '../../components/ui/AppButton.vue';
@@ -36,6 +37,10 @@ const restaurantModeOptions = [
     { id: 'comanda_garcom', label: 'Comanda garcom' },
 ];
 const defaultRestaurantMode = 'comanda_garcom';
+const connectionModeOptions = [
+    { id: 'direct', label: 'Direto (terminal)' },
+    { id: 'network', label: 'Rede (bridge)' },
+];
 const connectedTerminalSession = getTerminalSession();
 
 const form = reactive({
@@ -43,6 +48,12 @@ const form = reactive({
     identificador: '',
     ativo: true,
     pdv_restaurant_mode: defaultRestaurantMode,
+    printer_connection_mode: 'direct',
+    printer_bridge_base_url: '',
+    printer_bridge_device_id: '',
+    scale_connection_mode: 'direct',
+    scale_bridge_base_url: '',
+    scale_bridge_device_id: '',
 });
 
 const dialogTitle = computed(() => (editingId.value ? 'Editar Terminal' : 'Novo Terminal'));
@@ -52,6 +63,8 @@ const connectedTerminalCode = computed(() => String(connectedTerminalSession?.co
 const connectedTerminalLabel = computed(() => String(connectedTerminalSession?.label || '').trim());
 const isRestaurantCompanyMode = computed(() => companyLayoutMode.value === 'restaurante');
 const companyLayoutModeLabel = computed(() => layoutModeLabels[companyLayoutMode.value] || layoutModeLabels.varejo);
+const usesNetworkPrinter = computed(() => normalizeConnectionMode(form.printer_connection_mode) === 'network');
+const usesNetworkScale = computed(() => normalizeConnectionMode(form.scale_connection_mode) === 'network');
 
 function normalizeIdentifier(value) {
     return String(value || '')
@@ -89,6 +102,18 @@ function layoutLabel(layoutMode, restaurantMode) {
     return `${label} - ${restaurantModeLabel(restaurantMode)}`;
 }
 
+function deviceSummary(item) {
+    const access = normalizeTerminalDeviceAccess(item);
+    const printer = access.printer.mode === 'network'
+        ? `Impressora: rede (${access.printer.bridgeDeviceId || '--'})`
+        : 'Impressora: direto';
+    const scale = access.scale.mode === 'network'
+        ? `Balança: rede (${access.scale.bridgeDeviceId || '--'})`
+        : 'Balança: direto';
+
+    return `${printer} · ${scale}`;
+}
+
 function isConnectedTerminal(item) {
     const itemId = String(item?.id || '');
     const itemCode = String(item?.identificador || '').trim().toUpperCase();
@@ -105,6 +130,12 @@ function resetForm() {
     form.identificador = '';
     form.ativo = true;
     form.pdv_restaurant_mode = defaultRestaurantMode;
+    form.printer_connection_mode = 'direct';
+    form.printer_bridge_base_url = '';
+    form.printer_bridge_device_id = '';
+    form.scale_connection_mode = 'direct';
+    form.scale_bridge_base_url = '';
+    form.scale_bridge_device_id = '';
 }
 
 async function loadItems() {
@@ -142,10 +173,17 @@ function openEdit(item) {
     editingId.value = item.id;
     error.value = '';
     actionFeedback.value = '';
+    const access = normalizeTerminalDeviceAccess(item);
     form.nome = item.nome;
     form.identificador = item.identificador;
     form.ativo = item.ativo;
     form.pdv_restaurant_mode = normalizeRestaurantMode(item.pdv_restaurant_mode);
+    form.printer_connection_mode = access.printer.mode;
+    form.printer_bridge_base_url = access.printer.bridgeBaseUrl || '';
+    form.printer_bridge_device_id = access.printer.bridgeDeviceId || '';
+    form.scale_connection_mode = access.scale.mode;
+    form.scale_bridge_base_url = access.scale.bridgeBaseUrl || '';
+    form.scale_bridge_device_id = access.scale.bridgeDeviceId || '';
     dialogOpen.value = true;
 }
 
@@ -179,6 +217,28 @@ function validateForm() {
         return false;
     }
 
+    if (usesNetworkPrinter.value) {
+        if (!normalizeBridgeBaseUrl(form.printer_bridge_base_url)) {
+            error.value = 'Informe uma URL base válida para o bridge da impressora.';
+            return false;
+        }
+        if (!normalizeBridgeDeviceId(form.printer_bridge_device_id)) {
+            error.value = 'Informe o device ID da impressora no bridge.';
+            return false;
+        }
+    }
+
+    if (usesNetworkScale.value) {
+        if (!normalizeBridgeBaseUrl(form.scale_bridge_base_url)) {
+            error.value = 'Informe uma URL base válida para o bridge da balança.';
+            return false;
+        }
+        if (!normalizeBridgeDeviceId(form.scale_bridge_device_id)) {
+            error.value = 'Informe o device ID da balança no bridge.';
+            return false;
+        }
+    }
+
     form.identificador = identificador;
     error.value = '';
     return true;
@@ -199,6 +259,20 @@ async function save() {
             pdv_restaurant_mode: isRestaurantCompanyMode.value
                 ? normalizeRestaurantMode(form.pdv_restaurant_mode)
                 : null,
+            printer_connection_mode: normalizeConnectionMode(form.printer_connection_mode),
+            printer_bridge_base_url: usesNetworkPrinter.value
+                ? normalizeBridgeBaseUrl(form.printer_bridge_base_url)
+                : null,
+            printer_bridge_device_id: usesNetworkPrinter.value
+                ? normalizeBridgeDeviceId(form.printer_bridge_device_id)
+                : null,
+            scale_connection_mode: normalizeConnectionMode(form.scale_connection_mode),
+            scale_bridge_base_url: usesNetworkScale.value
+                ? normalizeBridgeBaseUrl(form.scale_bridge_base_url)
+                : null,
+            scale_bridge_device_id: usesNetworkScale.value
+                ? normalizeBridgeDeviceId(form.scale_bridge_device_id)
+                : null,
         };
 
         if (editingId.value) {
@@ -213,11 +287,22 @@ async function save() {
         await loadItems();
     } catch (requestError) {
         const validationErrors = requestError?.response?.data?.errors || {};
+        const deviceErrorFields = [
+            'printer_connection_mode',
+            'printer_bridge_base_url',
+            'printer_bridge_device_id',
+            'scale_connection_mode',
+            'scale_bridge_base_url',
+            'scale_bridge_device_id',
+        ];
 
         if (Array.isArray(validationErrors.identificador) && validationErrors.identificador.length > 0) {
             error.value = validationErrors.identificador[0];
         } else if (Array.isArray(validationErrors.nome) && validationErrors.nome.length > 0) {
             error.value = validationErrors.nome[0];
+        } else if (deviceErrorFields.some((field) => Array.isArray(validationErrors[field]) && validationErrors[field].length > 0)) {
+            const firstField = deviceErrorFields.find((field) => Array.isArray(validationErrors[field]) && validationErrors[field].length > 0);
+            error.value = firstField ? validationErrors[firstField][0] : 'Não foi possível validar os dispositivos do terminal.';
         } else {
             error.value = requestError?.response?.data?.message ?? 'Não foi possível salvar o terminal.';
         }
@@ -279,6 +364,7 @@ onMounted(loadItems);
                         <th class="terminals-col-name">Nome</th>
                         <th class="terminals-col-identifier">Identificador</th>
                         <th class="terminals-col-layout">Tipo de PDV</th>
+                        <th class="terminals-col-devices">Dispositivos</th>
                         <th class="terminals-col-status">Status</th>
                         <th class="terminals-col-actions">Ações</th>
                     </tr>
@@ -286,11 +372,11 @@ onMounted(loadItems);
 
                 <tbody>
                     <tr v-if="loading">
-                        <td colspan="5" class="terminals-empty">Carregando terminais...</td>
+                        <td colspan="6" class="terminals-empty">Carregando terminais...</td>
                     </tr>
 
                     <tr v-else-if="items.length === 0">
-                        <td colspan="5" class="terminals-empty">Nenhum terminal cadastrado.</td>
+                        <td colspan="6" class="terminals-empty">Nenhum terminal cadastrado.</td>
                     </tr>
 
                     <tr v-for="item in items" :key="item.id" :class="{ 'is-connected-terminal': isConnectedTerminal(item) }">
@@ -304,6 +390,7 @@ onMounted(loadItems);
                         </td>
                         <td class="terminals-identifier-cell">{{ item.identificador }}</td>
                         <td class="terminals-layout-cell">{{ layoutLabel(companyLayoutMode, item.pdv_restaurant_mode) }}</td>
+                        <td class="terminals-devices-cell">{{ deviceSummary(item) }}</td>
                         <td>
                             <div class="terminals-status-cell">
                                 <AppBadge :variant="item.ativo ? 'success' : 'default'">
@@ -364,6 +451,44 @@ onMounted(loadItems);
                         </AppSelect>
                         <p class="terminals-help">Essa opção aparece quando o tipo global está como PDV Restaurante.</p>
                     </div>
+                    <div class="space-y-1">
+                        <AppSelect v-model="form.printer_connection_mode" label="Impressora térmica">
+                            <option v-for="option in connectionModeOptions" :key="`printer-${option.id}`" :value="option.id">
+                                {{ option.label }}
+                            </option>
+                        </AppSelect>
+                        <div v-if="usesNetworkPrinter" class="space-y-2">
+                            <AppInput
+                                v-model="form.printer_bridge_base_url"
+                                label="URL base do bridge (impressora)"
+                                placeholder="http://192.168.0.50:8787"
+                            />
+                            <AppInput
+                                v-model="form.printer_bridge_device_id"
+                                label="Device ID da impressora"
+                                placeholder="printer-kitchen-1"
+                            />
+                        </div>
+                    </div>
+                    <div class="space-y-1">
+                        <AppSelect v-model="form.scale_connection_mode" label="Balança">
+                            <option v-for="option in connectionModeOptions" :key="`scale-${option.id}`" :value="option.id">
+                                {{ option.label }}
+                            </option>
+                        </AppSelect>
+                        <div v-if="usesNetworkScale" class="space-y-2">
+                            <AppInput
+                                v-model="form.scale_bridge_base_url"
+                                label="URL base do bridge (balança)"
+                                placeholder="http://192.168.0.50:8787"
+                            />
+                            <AppInput
+                                v-model="form.scale_bridge_device_id"
+                                label="Device ID da balança"
+                                placeholder="scale-horti-1"
+                            />
+                        </div>
+                    </div>
                     <AppCheckbox v-model="form.ativo" label="Ativo" />
                 </div>
 
@@ -400,6 +525,7 @@ onMounted(loadItems);
 .terminals-col-name,
 .terminals-col-identifier,
 .terminals-col-layout,
+.terminals-col-devices,
 .terminals-col-status,
 .terminals-col-actions {
     text-transform: none;
@@ -410,29 +536,34 @@ onMounted(loadItems);
 }
 
 .terminals-col-name {
-    width: 28%;
+    width: 24%;
 }
 
 .terminals-col-identifier {
-    width: 22%;
+    width: 15%;
 }
 
 .terminals-col-layout {
-    width: 22%;
+    width: 15%;
+}
+
+.terminals-col-devices {
+    width: 24%;
 }
 
 .terminals-col-status {
-    width: 16%;
+    width: 12%;
 }
 
 .terminals-col-actions {
-    width: 12%;
+    width: 10%;
     text-align: right;
 }
 
 .terminals-name-cell,
 .terminals-identifier-cell,
-.terminals-layout-cell {
+.terminals-layout-cell,
+.terminals-devices-cell {
     font-size: 1rem;
     font-weight: 700;
     color: var(--color-text);
@@ -441,6 +572,12 @@ onMounted(loadItems);
 .terminals-identifier-cell {
     color: var(--color-text-muted);
     letter-spacing: 0.02em;
+}
+
+.terminals-devices-cell {
+    font-size: 0.84rem;
+    color: var(--color-text-muted);
+    line-height: 1.35;
 }
 
 .terminals-name-wrap {
@@ -611,6 +748,7 @@ onMounted(loadItems);
     .terminals-col-name,
     .terminals-col-identifier,
     .terminals-col-layout,
+    .terminals-col-devices,
     .terminals-col-status,
     .terminals-col-actions {
         font-size: 0.88rem;
@@ -618,7 +756,8 @@ onMounted(loadItems);
 
     .terminals-name-cell,
     .terminals-identifier-cell,
-    .terminals-layout-cell {
+    .terminals-layout-cell,
+    .terminals-devices-cell {
         font-size: 0.94rem;
     }
 

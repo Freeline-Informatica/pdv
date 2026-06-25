@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import api from '../../lib/api';
-import { formatCurrency, formatPercent } from '../../lib/format';
+import { formatCurrency } from '../../lib/format';
 import SettingsPageHeader from '../../components/settings/SettingsPageHeader.vue';
 import SettingsFilterBar from '../../components/settings/SettingsFilterBar.vue';
 import SettingsTableCard from '../../components/settings/SettingsTableCard.vue';
@@ -65,8 +65,8 @@ function openEdit(item) {
     form.quantidade_parcelas = String(item.quantidade_parcelas || 1);
     form.intervalo_parcelas = String(item.intervalo_parcelas || 30);
     form.valor_minimo_parcela = String(item.valor_minimo_parcela || 0);
-    form.possui_juros = !!item.possui_juros;
-    form.percentual_juros = String(item.percentual_juros || 0);
+    form.possui_juros = false;
+    form.percentual_juros = '0';
     form.exibir_pdv = !!item.exibir_pdv;
     dialogOpen.value = true;
 }
@@ -108,8 +108,8 @@ async function save() {
             quantidade_parcelas: Number(form.quantidade_parcelas || 1),
             intervalo_parcelas: Number(form.intervalo_parcelas || 30),
             valor_minimo_parcela: Number(form.valor_minimo_parcela || 0),
-            possui_juros: form.possui_juros,
-            percentual_juros: form.possui_juros ? Number(form.percentual_juros || 0) : 0,
+            possui_juros: false,
+            percentual_juros: 0,
             exibir_pdv: form.exibir_pdv,
         };
 
@@ -144,7 +144,7 @@ onMounted(async () => {
 
 <template>
     <div class="space-y-4">
-        <SettingsPageHeader title="Planos de Pagamento" subtitle="Parcelas, juros e exibição no PDV por meio de pagamento.">
+        <SettingsPageHeader title="Planos de Pagamento" subtitle="Parcelas sem juros e exibição no PDV por meio de pagamento.">
             <template #actions>
                 <AppButton :disabled="!selectedMethodId" @click="openNew">Novo plano</AppButton>
             </template>
@@ -171,7 +171,7 @@ onMounted(async () => {
                     <tr>
                         <th class="text-left">Plano</th>
                         <th class="text-center">Parcelas</th>
-                        <th class="text-center">Juros</th>
+                        <th class="text-center">Condição</th>
                         <th class="text-center">Valor mín.</th>
                         <th class="text-center">Status</th>
                         <th class="text-right">Ações</th>
@@ -196,7 +196,7 @@ onMounted(async () => {
                     <tr v-for="item in plans" :key="item.id">
                         <td class="font-semibold text-main">{{ item.nome }}</td>
                         <td class="text-center">{{ item.quantidade_parcelas }}</td>
-                        <td class="text-center">{{ item.possui_juros ? formatPercent(item.percentual_juros) : 'Sem juros' }}</td>
+                        <td class="text-center">Sem juros</td>
                         <td class="text-center">{{ formatCurrency(item.valor_minimo_parcela) }}</td>
                         <td class="text-center">
                             <AppBadge :variant="item.ativo ? 'success' : 'default'">
@@ -228,19 +228,9 @@ onMounted(async () => {
                 <AppInput v-model="form.valor_minimo_parcela" type="number" min="0" step="0.01" label="Valor mínimo por parcela" />
 
                 <div class="md:col-span-2 flex flex-wrap gap-4">
-                    <AppCheckbox v-model="form.possui_juros" label="Possui juros" />
                     <AppCheckbox v-model="form.exibir_pdv" label="Exibir no PDV" />
                     <AppCheckbox v-model="form.ativo" label="Ativo" />
                 </div>
-
-                <AppInput
-                    v-if="form.possui_juros"
-                    v-model="form.percentual_juros"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    label="Percentual de juros"
-                />
             </div>
 
             <div class="mt-5 flex justify-end gap-2">

@@ -1,13 +1,12 @@
 <script setup>
-import { Boxes, CirclePlus, Menu, Percent, Search, X } from 'lucide-vue-next';
+import { Boxes, CirclePlus, Menu, Percent, Scale, Search, X } from 'lucide-vue-next';
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
     clearAuthData,
     clearSettingsAccessKey,
-    exitIntegratedPdv,
     getTerminalSession,
     getUserRole,
-    resolvePdvExitLabel,
+    setCancelAccessKey,
     setSettingsAccessKey,
 } from '../lib/auth';
 import api from '../lib/api';
@@ -20,6 +19,10 @@ import {
     reintegrateCommandCenter,
 } from '../lib/restaurantCommandCenter';
 import { formatCurrency } from '../lib/format';
+import { parseOperacaoRapida } from '../lib/posOperations';
+import { productAllowsFractionalQuantity } from '../lib/quantity';
+import { resolveScaleDeviceConfig } from '../lib/deviceTransportResolver';
+import { readScaleMeasurement } from '../lib/scaleTransportClient';
 import { useRoute, useRouter } from 'vue-router';
 import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts';
 import PosShell from '../components/pos/PosShell.vue';
@@ -35,16 +38,17 @@ import SaleReceiptPreview from '../components/pos/SaleReceiptPreview.vue';
 import SelectedItemPreview from '../components/pos/SelectedItemPreview.vue';
 import PosShortcutsDialog from '../components/pos/PosShortcutsDialog.vue';
 import PosCancelDialog from '../components/pos/PosCancelDialog.vue';
+import PosCashSalesDialog from '../components/pos/PosCashSalesDialog.vue';
 import FinalizeSaleModal from '../components/pos/finalize/FinalizeSaleModal.vue';
 import CommandCenterModal from '../components/pos/command-center/CommandCenterModal.vue';
 import PosCustomerBadge from '../components/pos/PosCustomerBadge.vue';
 import PosNfceStatus from '../components/pos/PosNfceStatus.vue';
+import PosLocalPrinterControl from '../components/pos/PosLocalPrinterControl.vue';
 import AppThemeToggle from '../components/layout/AppThemeToggle.vue';
 import AppToast from '../components/ui/AppToast.vue';
 import AppModal from '../components/ui/AppModal.vue';
 import AppButton from '../components/ui/AppButton.vue';
 import AppInput from '../components/ui/AppInput.vue';
-import AppSelect from '../components/ui/AppSelect.vue';
 import AppTooltip from '../components/ui/AppTooltip.vue';
 import { useRestaurantCommandCenter } from '../composables/useRestaurantCommandCenter';
 
@@ -53,6 +57,7 @@ const route = useRoute();
 const categories = ref([]);
 const products = ref([]);
 const search = ref('');
+const lastAutoAppliedPendingMultiplierRaw = ref('');
 const category = ref('todos');
 const cart = reactive([]);
 const posShellRef = ref(null);
@@ -60,6 +65,7 @@ const searchBarRef = ref(null);
 const consultSearchBarRef = ref(null);
 const shortcutsOpen = ref(false);
 const cancelDialogOpen = ref(false);
+const cashSalesDialogOpen = ref(false);
 const finalizeModalOpen = ref(false);
 const productConsultModalOpen = ref(false);
 const restaurantComandaModalOpen = ref(false);
@@ -76,6 +82,7 @@ const selfServiceStartedAt = ref('');
 const selfServiceCurrentClock = ref('');
 const selfServiceViewportMode = ref('web');
 const selfServiceNameInputRef = ref(null);
+const scaleApplyButtonRef = ref(null);
 const totemDrawerOpen = ref(false);
 const totemEdgeTriggerVisible = ref(false);
 const totemCartDialogOpen = ref(false);
@@ -131,6 +138,21 @@ const multiplierAdjustment = reactive({
     active: false,
     quantity: 1,
 });
+const scaleMeasurementModal = reactive({
+    open: false,
+    loading: false,
+    error: '',
+    manualWeight: '',
+    kilograms: null,
+    grams: null,
+    stable: null,
+    source: '',
+    readAt: '',
+    raw: '',
+    mode: 'manual',
+    product: null,
+    selectedQuantity: 1,
+});
 const settingsUnlockModal = reactive({
     open: false,
     mode: 'credentials',
@@ -149,9 +171,11 @@ const cancelUnlockModal = reactive({
     adminPin: '',
     loading: false,
     error: '',
+    target: 'items',
 });
 const cancelAdminPinInputRef = ref(null);
 const isOperatorUser = computed(() => getUserRole() === 'operador');
+const isAdminUser = computed(() => getUserRole() === 'admin');
 const adminPinLength = computed(() =>
     String(settingsUnlockModal.adminPin ?? '')
         .replace(/\D/g, '')
@@ -209,9 +233,11 @@ const canSubmitTotemGuard = computed(() => {
 let toastTimeout = null;
 let lastFocusedBeforeShortcuts = null;
 let lastFocusedBeforeAdjustment = null;
+let lastFocusedBeforeScale = null;
 let selfServiceClockInterval = null;
 const fixedShortcuts = new Set(['f1', 'f2', 'f3', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11']);
 const editableAllowedShortcuts = new Set([...fixedShortcuts, '+', 'escape']);
+const weighableUnits = new Set(['KG']);
 const directionalKeyMap = Object.freeze({
     arrowup: 'up',
     arrowdown: 'down',
@@ -299,18 +325,16 @@ const selfServiceViewportLabel = computed(() => {
     return 'Web';
 });
 const totemCartItemCountLabel = computed(() => `${cart.length} ${cart.length === 1 ? 'item' : 'itens'}`);
-const exitLabel = computed(() => resolvePdvExitLabel());
-const totemMenuActions = computed(() => [
+const totemMenuActions = Object.freeze([
     { id: 'cancel-item', key: 'F2', label: 'Cancelamento' },
     { id: 'identify-customer', key: 'F10', label: 'Cliente' },
     { id: 'open-budget', key: 'O', label: 'Conta' },
     { id: 'identify-seller', key: 'V', label: 'Vendedor' },
     { id: 'open-shortcuts', key: 'F11', label: 'Atalhos' },
     { id: 'open-settings', key: '', label: 'Configurações' },
-    { id: 'logout', key: '', label: exitLabel.value },
+    { id: 'logout', key: '', label: 'Sair' },
 ]);
 const restaurantCommandCenter = useRestaurantCommandCenter({
-    getProducts: () => products.value,
     api: {
         fetchSnapshot: () => fetchCommandCenterSnapshot(),
         reintegrate: () => reintegrateCommandCenter(),
@@ -344,6 +368,34 @@ function normalizeQuantity(value) {
     return Math.round((Number(value) || 0) * 1000) / 1000;
 }
 
+function parseManualScaleWeight(value) {
+    const raw = String(value ?? '').trim();
+    if (!raw || /[^\d\s,.]/.test(raw)) return null;
+
+    const cleaned = raw.replace(/\s+/g, '');
+    const decimalIndex = Math.max(cleaned.lastIndexOf(','), cleaned.lastIndexOf('.'));
+    const normalized = decimalIndex >= 0
+        ? `${cleaned.slice(0, decimalIndex).replace(/[,.]/g, '') || '0'}.${cleaned.slice(decimalIndex + 1).replace(/[,.]/g, '')}`
+        : String(Number(cleaned.replace(/[,.]/g, '')) / 1000);
+
+    if (!/^\d+(?:\.\d+)?$/.test(normalized)) return null;
+
+    const numeric = Number(normalized);
+    if (!Number.isFinite(numeric) || numeric <= 0) return null;
+
+    return normalizeQuantity(numeric);
+}
+
+function formatManualScaleWeightInput(value) {
+    const kilograms = parseManualScaleWeight(value);
+    if (!Number.isFinite(kilograms)) return String(value ?? '');
+
+    return kilograms.toLocaleString('pt-BR', {
+        minimumFractionDigits: 3,
+        maximumFractionDigits: 3,
+    });
+}
+
 function formatDecimal(value, decimals = 3) {
     return Number(value || 0).toLocaleString('pt-BR', {
         minimumFractionDigits: 0,
@@ -356,23 +408,78 @@ function normalizeDraftQuantity(value) {
     return normalized > 0 ? normalized : 1;
 }
 
+function normalizeAppliedQuantity(value, fallback = 1) {
+    const normalized = normalizeQuantity(value);
+    return Number.isFinite(normalized) && normalized > 0 ? normalized : fallback;
+}
+
+function normalizeUnit(value) {
+    return String(value || '').trim().toUpperCase();
+}
+
+function productUnitCandidates(product) {
+    return [
+        product?.unidade_tributavel,
+        product?.tributacao?.unidade_tributavel,
+        product?.restaurant_config?.tributacao?.unidade_tributavel,
+        product?.unidade_medida?.codigo_fiscal,
+        product?.unidadeMedida?.codigo_fiscal,
+        product?.unidade,
+        product?.unit,
+        product?.unidade_medida?.unidade,
+        product?.unidadeMedida?.unidade,
+    ];
+}
+
+function isWeighableProduct(product) {
+    if (!product || typeof product !== 'object') return false;
+
+    if (product.produto_pesavel === true) return true;
+
+    return productUnitCandidates(product).some((unit) => weighableUnits.has(normalizeUnit(unit)));
+}
+
+function shouldOpenScaleForProduct(product) {
+    return isWeighableProduct(product) && !multiplierAdjustment.active;
+}
+
+function productAllowsPosFractionalQuantity(product) {
+    return isWeighableProduct(product) || productAllowsFractionalQuantity(product);
+}
+
+function normalizeScalePayload(payload) {
+    const source = payload && typeof payload === 'object' ? payload : {};
+    let kilograms = Number(source.kilograms);
+    let grams = Number(source.grams);
+
+    if ((!Number.isFinite(kilograms) || kilograms <= 0) && Number.isFinite(grams) && grams > 0) {
+        kilograms = grams / 1000;
+    }
+
+    if ((!Number.isFinite(grams) || grams <= 0) && Number.isFinite(kilograms) && kilograms > 0) {
+        grams = Math.round(kilograms * 1000);
+    }
+
+    if (!Number.isFinite(kilograms) || kilograms <= 0) {
+        return null;
+    }
+
+    return {
+        kilograms: normalizeQuantity(kilograms),
+        grams: Number.isFinite(grams) && grams > 0 ? Math.round(grams) : null,
+        stable: typeof source.stable === 'boolean' ? source.stable : null,
+        source: String(source.source || '').trim(),
+        readAt: String(source.read_at || '').trim(),
+        raw: String(source.raw || '').trim(),
+    };
+}
+
 function normalizeSearchToken(value) {
     return String(value ?? '')
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
         .trim()
         .toLowerCase();
-}
-
-function parseInlineMultiplierToken(value) {
-    const match = String(value ?? '').trim().match(/^\*\s*(\d+(?:[.,]\d{1,3})?)$/);
-    if (!match) return null;
-
-    const parsedQuantity = Number(match[1].replace(',', '.'));
-    const quantity = normalizeQuantity(parsedQuantity);
-    if (!Number.isFinite(quantity) || quantity <= 0) return null;
-
-    return quantity;
 }
 
 function normalizeRestaurantOperationMode(value) {
@@ -814,7 +921,9 @@ const overlaysOpen = computed(
         totemCartDialogOpen.value ||
         cancelUnlockModal.open ||
         cancelDialogOpen.value ||
+        cashSalesDialogOpen.value ||
         adjustmentModal.open ||
+        scaleMeasurementModal.open ||
         finalizeModalOpen.value ||
         restaurantComandaModalOpen.value ||
         productConsultModalOpen.value ||
@@ -1232,10 +1341,44 @@ const multiplierAdjustmentLabel = computed(() => {
     if (!multiplierAdjustment.active) return '';
     return `Quantidade x ${formatDecimal(multiplierAdjustment.quantity)}`;
 });
+const scaleMeasuredWeightLabel = computed(() => {
+    if (!Number.isFinite(scaleMeasurementModal.kilograms)) return '--';
+    return `${formatDecimal(scaleMeasurementModal.kilograms)} kg`;
+});
+const canApplyScaleMeasurement = computed(
+    () => Number.isFinite(scaleMeasurementModal.kilograms) && Number(scaleMeasurementModal.kilograms) > 0,
+);
+const scaleMeasurementModeLabel = computed(() =>
+    scaleMeasurementModal.mode === 'product'
+        ? 'Aferição para produto pesável'
+        : 'Aferição manual da balança',
+);
 
 function focusSearchField() {
     nextTick(() => {
         searchBarRef.value?.focus?.();
+    });
+}
+
+function resolveButtonElement(target) {
+    if (!target) return null;
+    if (target instanceof HTMLButtonElement) return target;
+
+    const rootElement = target.$el ?? target;
+    if (rootElement instanceof HTMLButtonElement) return rootElement;
+    if (rootElement instanceof HTMLElement) {
+        return rootElement.querySelector('button');
+    }
+
+    return null;
+}
+
+function focusScaleApplyButton() {
+    nextTick(() => {
+        const button = resolveButtonElement(scaleApplyButtonRef.value);
+        if (!(button instanceof HTMLButtonElement)) return;
+        if (button.disabled) return;
+        button.focus();
     });
 }
 
@@ -1263,13 +1406,178 @@ function closeProductConsultModal() {
     focusSearchField();
 }
 
+function resetScaleMeasurementModal(options = { preserveContext: false }) {
+    const { preserveContext = false } = options || {};
+    scaleMeasurementModal.loading = false;
+    scaleMeasurementModal.error = '';
+    scaleMeasurementModal.manualWeight = '';
+    scaleMeasurementModal.kilograms = null;
+    scaleMeasurementModal.grams = null;
+    scaleMeasurementModal.stable = null;
+    scaleMeasurementModal.source = '';
+    scaleMeasurementModal.readAt = '';
+    scaleMeasurementModal.raw = '';
+
+    if (preserveContext) return;
+
+    scaleMeasurementModal.mode = 'manual';
+    scaleMeasurementModal.product = null;
+    scaleMeasurementModal.selectedQuantity = 1;
+}
+
+function openScaleMeasurementModal(options = {}) {
+    const {
+        mode = 'manual',
+        product = null,
+        selectedQuantity = 1,
+        autoRead = true,
+    } = options || {};
+
+    lastFocusedBeforeScale = getCurrentFocusableElement();
+    resetScaleMeasurementModal();
+    scaleMeasurementModal.mode = mode;
+    scaleMeasurementModal.product = product;
+    scaleMeasurementModal.selectedQuantity = normalizeDraftQuantity(selectedQuantity);
+    scaleMeasurementModal.open = true;
+    focusScaleApplyButton();
+
+    if (autoRead) {
+        void readScaleForModal();
+    }
+}
+
+function closeScaleMeasurementModal(options = { focusSearch: true, restoreFocus: true }) {
+    const { focusSearch = true, restoreFocus = true } = options || {};
+    const targetToRestore = restoreFocus ? lastFocusedBeforeScale : null;
+    lastFocusedBeforeScale = null;
+    scaleMeasurementModal.open = false;
+    resetScaleMeasurementModal();
+
+    nextTick(() => {
+        if (focusSearch) {
+            focusSearchField();
+            return;
+        }
+
+        restoreFocusToElement(targetToRestore);
+    });
+}
+
+async function readScaleForModal() {
+    if (scaleMeasurementModal.loading) return;
+
+    const config = resolveScaleDeviceConfig(getTerminalSession());
+    if (config.mode !== 'network') {
+        scaleMeasurementModal.error = 'Este terminal não está configurado para leitura em rede da balança. Informe o peso manualmente.';
+        return;
+    }
+    if (!config.bridgeBaseUrl || !config.bridgeDeviceId) {
+        scaleMeasurementModal.error = 'Configure URL do bridge e identificador da balança neste terminal ou informe o peso manualmente.';
+        return;
+    }
+
+    scaleMeasurementModal.loading = true;
+    scaleMeasurementModal.error = '';
+
+    try {
+        const payload = await readScaleMeasurement(config);
+        const normalized = normalizeScalePayload(payload);
+        if (!normalized) {
+            throw new Error('A balança não retornou um peso válido.');
+        }
+
+        scaleMeasurementModal.kilograms = normalized.kilograms;
+        scaleMeasurementModal.grams = normalized.grams;
+        scaleMeasurementModal.stable = normalized.stable;
+        scaleMeasurementModal.source = normalized.source;
+        scaleMeasurementModal.readAt = normalized.readAt;
+        scaleMeasurementModal.raw = normalized.raw;
+        scaleMeasurementModal.manualWeight = '';
+    } catch (error) {
+        scaleMeasurementModal.error =
+            error instanceof Error
+                ? error.message
+                : 'Falha ao ler peso na balança.';
+    } finally {
+        scaleMeasurementModal.loading = false;
+        if (Number.isFinite(scaleMeasurementModal.kilograms) && Number(scaleMeasurementModal.kilograms) > 0) {
+            focusScaleApplyButton();
+        }
+    }
+}
+
+function updateManualScaleWeight(value) {
+    scaleMeasurementModal.manualWeight = value;
+    const raw = String(value ?? '').trim();
+
+    if (!raw) {
+        if (scaleMeasurementModal.source === 'Manual') {
+            scaleMeasurementModal.kilograms = null;
+            scaleMeasurementModal.grams = null;
+            scaleMeasurementModal.stable = null;
+            scaleMeasurementModal.source = '';
+            scaleMeasurementModal.readAt = '';
+            scaleMeasurementModal.raw = '';
+        }
+        scaleMeasurementModal.error = '';
+        return;
+    }
+
+    const kilograms = parseManualScaleWeight(raw);
+    scaleMeasurementModal.kilograms = Number.isFinite(kilograms) ? kilograms : null;
+    scaleMeasurementModal.grams = Number.isFinite(kilograms) ? Math.round(kilograms * 1000) : null;
+    scaleMeasurementModal.stable = null;
+    scaleMeasurementModal.source = 'Manual';
+    scaleMeasurementModal.readAt = '';
+    scaleMeasurementModal.raw = raw;
+    scaleMeasurementModal.error = Number.isFinite(kilograms)
+        ? ''
+        : 'Informe um peso manual válido em kg.';
+}
+
+function formatManualScaleWeightOnBlur() {
+    if (!scaleMeasurementModal.manualWeight) return;
+    scaleMeasurementModal.manualWeight = formatManualScaleWeightInput(scaleMeasurementModal.manualWeight);
+}
+
+function applyScaleMeasurement() {
+    const measuredQuantity = normalizeQuantity(scaleMeasurementModal.kilograms);
+    if (!Number.isFinite(measuredQuantity) || measuredQuantity <= 0) {
+        scaleMeasurementModal.error = 'Faça uma aferição valida antes de aplicar o peso.';
+        return;
+    }
+
+    if (scaleMeasurementModal.mode === 'product' && scaleMeasurementModal.product) {
+        const targetProduct = scaleMeasurementModal.product;
+        const targetQuantity = scaleMeasurementModal.selectedQuantity;
+        const weightedQuantity = normalizeQuantity(targetQuantity * measuredQuantity);
+
+        multiplierAdjustment.active = true;
+        multiplierAdjustment.quantity = measuredQuantity;
+        const added = addToCart(targetProduct, targetQuantity);
+        if (!added) return;
+
+        search.value = '';
+        resetProductDraftQuantities();
+        const weightLabel = targetQuantity > 1
+            ? `${formatDecimal(weightedQuantity)} kg (${targetQuantity}x ${formatDecimal(measuredQuantity)} kg)`
+            : `${formatDecimal(measuredQuantity)} kg`;
+        showShortcutFeedback(`${targetProduct.nome} lançado com ${weightLabel}.`);
+        closeScaleMeasurementModal({ focusSearch: true, restoreFocus: false });
+        return;
+    }
+
+    activateMultiplierAdjustment(measuredQuantity);
+    closeScaleMeasurementModal({ focusSearch: true, restoreFocus: false });
+}
+
 function handleCategorySelect(nextCategory) {
     category.value = nextCategory;
 }
 
 async function openCancelDialog() {
     if (isOperatorUser.value) {
-        openCancelUnlockModal();
+        openCancelUnlockModal('items');
         return;
     }
 
@@ -1284,14 +1592,24 @@ function closeCancelDialog(options = { focusSearch: true }) {
     focusSearchField();
 }
 
-function openCancelUnlockModal() {
+function openCancelUnlockModal(target = 'items') {
     cancelUnlockModal.open = true;
-    cancelUnlockModal.mode = 'credentials';
+    cancelUnlockModal.mode = target === 'sales' ? 'pin' : 'credentials';
     cancelUnlockModal.adminEmail = '';
     cancelUnlockModal.adminPassword = '';
     cancelUnlockModal.adminPin = '';
     cancelUnlockModal.loading = false;
     cancelUnlockModal.error = '';
+    cancelUnlockModal.target = target;
+}
+
+function openCashSalesDialog() {
+    if (isAdminUser.value) {
+        cashSalesDialogOpen.value = true;
+        return;
+    }
+
+    openCancelUnlockModal('sales');
 }
 
 function focusCancelAdminPinInput() {
@@ -1337,11 +1655,20 @@ async function authorizeCancelAndOpen() {
                     admin_password: cancelUnlockModal.adminPassword,
                 };
 
-        await api.post('/auth/cancel/authorize', payload);
+        const { data } = await api.post('/auth/cancel/authorize', payload);
+        if (data?.cancel_access_key) {
+            setCancelAccessKey(data.cancel_access_key);
+        }
 
+        const target = cancelUnlockModal.target;
         closeCancelUnlockModal();
-        cancelDialogOpen.value = true;
-        showShortcutFeedback('Menu de cancelamento liberado pelo administrador.');
+        if (target === 'sales') {
+            cashSalesDialogOpen.value = true;
+            showShortcutFeedback('Vendas do caixa liberadas pelo administrador.');
+        } else {
+            cancelDialogOpen.value = true;
+            showShortcutFeedback('Cancelamento de item liberado pelo administrador.');
+        }
     } catch (error) {
         cancelUnlockModal.error =
             error?.response?.data?.message ?? 'Não foi possível validar o acesso do administrador.';
@@ -1506,9 +1833,7 @@ function handleCancelDialogLastItem(payload = {}) {
 
 function handleCancelDialogSale() {
     const success = cancelSale();
-    if (success) {
-        closeCancelDialog();
-    }
+    if (success) closeCancelDialog();
 }
 
 function handleCancelDialogAdjustments(payload = {}) {
@@ -1634,7 +1959,7 @@ function importSelectedRestaurantCommandToCart() {
     const customerLabel = String(selected.table.customerName || `Mesa ${selected.table.code || '--'}`);
     saleCustomerLabel.value = customerLabel.length > 20 ? `${customerLabel.slice(0, 20)}...` : customerLabel;
     activeSaleCommandContext.value = {
-        tableId: String(selected.table.id || ''),
+        tableId: selected.table.hasTable ? String(selected.table.id || '') : null,
         tableCode: String(selected.table.code || '--'),
         commandId: String(selected.command.id || ''),
         commandCode: String(selected.command.code || '--'),
@@ -1823,6 +2148,14 @@ function clearAllAdjustments() {
     clearAdjustment('multiplier', { withFeedback: false });
 }
 
+function setAdjustmentMode(mode) {
+    const normalizedMode = mode === 'percent' ? 'percent' : 'value';
+    if (adjustmentForm.mode === normalizedMode) return;
+
+    adjustmentForm.mode = normalizedMode;
+    adjustmentForm.amount = '';
+}
+
 function activateMultiplierAdjustment(quantity, options = {}) {
     const { clearSearch = false } = options;
     const normalizedQuantity = normalizeQuantity(quantity);
@@ -1906,15 +2239,15 @@ function applyActiveAdjustments(product, selectedQuantity = 1) {
         : 0;
 
     const adjustedPrice = roundMoney(Math.max(0, basePrice + surchargeValue - discountValue));
-    const baseQuantity = normalizeDraftQuantity(selectedQuantity);
+    const baseQuantity = normalizeAppliedQuantity(selectedQuantity, 1);
     const addedQuantity = multiplierAdjustment.active
-        ? normalizeQuantity(baseQuantity * multiplierAdjustment.quantity)
+        ? normalizeAppliedQuantity(baseQuantity * multiplierAdjustment.quantity, baseQuantity)
         : baseQuantity;
 
     return {
         ...product,
         preco_venda: adjustedPrice,
-        qty: normalizeQuantity(addedQuantity),
+        qty: addedQuantity,
         adjustment_signature: buildAdjustmentSignature(),
     };
 }
@@ -1922,6 +2255,12 @@ function applyActiveAdjustments(product, selectedQuantity = 1) {
 function addToCart(product, selectedQuantity = 1) {
     const hadActiveAdjustments = hasActiveAdjustments();
     const configuredProduct = applyActiveAdjustments(product, selectedQuantity);
+    if (!productAllowsPosFractionalQuantity(product) && Math.abs(configuredProduct.qty - Math.round(configuredProduct.qty)) > 0.000001) {
+        showShortcutFeedback('Este produto não permite quantidade fracionada.', 'warning');
+        focusSearchField();
+        return false;
+    }
+
     const existing = cart.find(
         (item) =>
             item.id === configuredProduct.id &&
@@ -1939,6 +2278,8 @@ function addToCart(product, selectedQuantity = 1) {
         showShortcutFeedback('Modificadores aplicados e limpos para o próximo item.');
         focusSearchField();
     }
+
+    return true;
 }
 
 function getProductDraftQuantity(productId) {
@@ -1967,6 +2308,16 @@ function addProductFromSearch(product) {
     if (!ensureSelfServiceSessionStarted()) return;
 
     const selectedQuantity = getProductDraftQuantity(product.id);
+    if (shouldOpenScaleForProduct(product)) {
+        openScaleMeasurementModal({
+            mode: 'product',
+            product,
+            selectedQuantity,
+            autoRead: true,
+        });
+        return;
+    }
+
     const hadActiveAdjustments = hasActiveAdjustments();
 
     addToCart(product, selectedQuantity);
@@ -2018,14 +2369,23 @@ function confirmSearchProduct() {
         return;
     }
 
-    const inlineMultiplierQuantity = parseInlineMultiplierToken(typedTerm);
-    if (inlineMultiplierQuantity) {
-        activateMultiplierAdjustment(inlineMultiplierQuantity, { clearSearch: true });
+    const quickOperation = parseOperacaoRapida(typedTerm);
+    if (quickOperation.type === 'invalid_multiplier') {
+        showShortcutFeedback(quickOperation.message, 'danger');
         focusSearchField();
         return;
     }
 
-    const productToAdd = findProductBySearchTerm(typedTerm);
+    if (quickOperation.type === 'pending_multiplier') {
+        activateMultiplierAdjustment(quickOperation.quantity, { clearSearch: true });
+        focusSearchField();
+        return;
+    }
+
+    const productSearchTerm = quickOperation.type === 'multiplier_search'
+        ? quickOperation.term
+        : typedTerm;
+    const productToAdd = findProductBySearchTerm(productSearchTerm);
     if (!productToAdd) {
         if (filteredProducts.value.length > 1) {
             showShortcutFeedback('Mais de um item encontrado. Digite SKU/código de barras ou o nome completo.', 'danger');
@@ -2036,8 +2396,42 @@ function confirmSearchProduct() {
         return;
     }
 
+    if (quickOperation.type === 'multiplier_search') {
+        const activated = activateMultiplierAdjustment(quickOperation.quantity, { clearSearch: false });
+        if (!activated) return;
+    }
+
     addProductFromSearch(productToAdd);
 }
+
+watch(search, (value) => {
+    const typedTerm = String(value ?? '').trim();
+    if (!typedTerm) {
+        lastAutoAppliedPendingMultiplierRaw.value = '';
+        return;
+    }
+
+    const quickOperation = parseOperacaoRapida(typedTerm);
+    if (quickOperation.type !== 'pending_multiplier') {
+        if (typedTerm !== lastAutoAppliedPendingMultiplierRaw.value) {
+            lastAutoAppliedPendingMultiplierRaw.value = '';
+        }
+
+        return;
+    }
+
+    if (quickOperation.raw === lastAutoAppliedPendingMultiplierRaw.value) return;
+    if (!ensureSelfServiceSessionStarted()) return;
+
+    lastAutoAppliedPendingMultiplierRaw.value = quickOperation.raw;
+    const activated = activateMultiplierAdjustment(quickOperation.quantity, { clearSearch: true });
+    if (!activated) {
+        lastAutoAppliedPendingMultiplierRaw.value = '';
+        return;
+    }
+
+    focusSearchField();
+});
 
 watch(searchQuery, (normalizedTerm) => {
     if (!normalizedTerm) return;
@@ -2258,8 +2652,6 @@ watch(
 );
 
 function logout() {
-    if (exitIntegratedPdv()) return;
-
     clearAuthData();
     router.push('/login');
 }
@@ -2362,7 +2754,7 @@ useKeyboardShortcuts(
         '+': () => openAdjustmentModal('surcharge'),
         f1: () => finalizeSale(),
         f2: () => openCancelDialog(),
-        f3: () => cancelSale(),
+        f3: () => openCashSalesDialog(),
         f6: () => openProductConsultModal(),
         f7: () => runPlannedShortcut('Abrir gaveta'),
         f8: () => runPlannedShortcut('Operações TEF'),
@@ -2376,6 +2768,10 @@ useKeyboardShortcuts(
             }
             if (cancelDialogOpen.value) {
                 closeCancelDialog();
+                return;
+            }
+            if (cashSalesDialogOpen.value) {
+                cashSalesDialogOpen.value = false;
                 return;
             }
             if (settingsUnlockModal.open) {
@@ -2401,6 +2797,10 @@ useKeyboardShortcuts(
             }
             if (restaurantComandaModalOpen.value) {
                 closeRestaurantComandaModal();
+                return;
+            }
+            if (scaleMeasurementModal.open) {
+                closeScaleMeasurementModal();
                 return;
             }
             if (adjustmentModal.open) {
@@ -2479,6 +2879,18 @@ function handleCtrlMultiplyShortcut(event) {
     openAdjustmentModal('multiplier');
 }
 
+function handleCtrlScaleShortcut(event) {
+    if ((!event.ctrlKey && !event.metaKey) || event.altKey) return;
+    if (overlaysOpen.value) return;
+
+    const normalizedKey = String(event.key || '').toLowerCase();
+    const isScaleKey = normalizedKey === 'b' || event.code === 'KeyB';
+    if (!isScaleKey) return;
+
+    event.preventDefault();
+    openScaleMeasurementModal({ mode: 'manual', autoRead: true });
+}
+
 onMounted(() => {
     restaurantOperationalMode.value = normalizeRestaurantOperationMode(getTerminalSession()?.restaurantMode);
     updateSelfServiceViewportMode();
@@ -2487,6 +2899,7 @@ onMounted(() => {
     focusSearchField();
     window.addEventListener('keydown', handleAltShortcuts);
     window.addEventListener('keydown', handleCtrlMultiplyShortcut);
+    window.addEventListener('keydown', handleCtrlScaleShortcut);
     window.addEventListener('keydown', handleDirectionalShortcuts);
     window.addEventListener('keydown', handleEnterAsClick);
     window.addEventListener('focus', loadReceiptEmitter);
@@ -2502,6 +2915,7 @@ onBeforeUnmount(() => {
     stopSelfServiceClock();
     window.removeEventListener('keydown', handleAltShortcuts);
     window.removeEventListener('keydown', handleCtrlMultiplyShortcut);
+    window.removeEventListener('keydown', handleCtrlScaleShortcut);
     window.removeEventListener('keydown', handleDirectionalShortcuts);
     window.removeEventListener('keydown', handleEnterAsClick);
     window.removeEventListener('focus', loadReceiptEmitter);
@@ -2520,8 +2934,8 @@ onBeforeUnmount(() => {
                 :show-settings="!isOperatorUser"
                 :budget-label="budgetShortcutLabel"
                 :enable-cancel-ticker="isRestaurantMode && !isSelfServiceMode"
-                :logout-label="exitLabel"
                 @cancel-item="openCancelDialog"
+                @cash-sales="openCashSalesDialog"
                 @identify-customer="runPlannedShortcut('Identificar cliente')"
                 @open-budget="handleBudgetShortcut"
                 @identify-seller="runPlannedShortcut('Identificar vendedor')"
@@ -2614,6 +3028,13 @@ onBeforeUnmount(() => {
                                     </span>
                                 </button>
                             </AppTooltip>
+                            <AppTooltip text="Aferição da balança (Ctrl + B)">
+                                <button type="button" class="pos-header-adjust-icon" @click="openScaleMeasurementModal({ mode: 'manual', autoRead: true })">
+                                    <span class="pos-header-adjust-symbol">
+                                        <Scale class="h-4 w-4" aria-hidden="true" />
+                                    </span>
+                                </button>
+                            </AppTooltip>
                             <AppTooltip text="Consultar produtos">
                                 <button type="button" class="pos-header-adjust-icon" @click="openProductConsultModal">
                                     <span class="pos-header-adjust-symbol">
@@ -2623,6 +3044,7 @@ onBeforeUnmount(() => {
                             </AppTooltip>
                             <PosCustomerBadge :label="saleCustomerLabel" />
                             <PosNfceStatus />
+                            <PosLocalPrinterControl compact />
                             <AppThemeToggle />
                         </div>
                     </div>
@@ -3037,9 +3459,17 @@ onBeforeUnmount(() => {
         @confirm-cancel-sale="handleCancelDialogSale"
         @confirm-cancel-adjustments="handleCancelDialogAdjustments"
     />
+    <PosCashSalesDialog
+        :open="cashSalesDialogOpen"
+        :terminal-id="String(getTerminalSession()?.id || '')"
+        :api-client="api"
+        @close="cashSalesDialogOpen = false"
+        @canceled="showShortcutFeedback('Venda cancelada com sucesso.')"
+    />
         <FinalizeSaleModal
             :open="finalizeModalOpen"
             :cart="cart"
+            :emitter="receiptEmitter"
             :sale-context="activeSaleCommandContext"
             @close="closeFinalizeModal"
             @completed="handleFinalizeCompleted"
@@ -3138,6 +3568,75 @@ onBeforeUnmount(() => {
         </div>
     </AppModal>
     <AppModal
+        :open="scaleMeasurementModal.open"
+        title="Aferição da Balança"
+        width-class="max-w-md"
+        @close="closeScaleMeasurementModal"
+    >
+        <div class="space-y-4">
+            <p class="text-sm text-muted">{{ scaleMeasurementModeLabel }}</p>
+
+            <div
+                v-if="scaleMeasurementModal.mode === 'product' && scaleMeasurementModal.product"
+                class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-elevated)] p-3"
+            >
+                <p class="text-xs uppercase tracking-wide text-muted">Produto em aferição</p>
+                <p class="mt-1 text-sm font-bold text-main">{{ scaleMeasurementModal.product.nome }}</p>
+                <p class="mt-1 text-xs text-muted">
+                    Quantidade digitada: {{ scaleMeasurementModal.selectedQuantity }}x
+                </p>
+            </div>
+
+            <AppInput
+                :model-value="scaleMeasurementModal.manualWeight"
+                label="Peso manual (kg)"
+                type="text"
+                inputmode="decimal"
+                placeholder="Ex.: 0,350"
+                hint="Sem vírgula, digite em gramas: 900 = 0,900 kg."
+                autocomplete="off"
+                @update:model-value="updateManualScaleWeight"
+                @blur="formatManualScaleWeightOnBlur"
+                @keydown.enter.prevent="canApplyScaleMeasurement && applyScaleMeasurement()"
+            />
+
+            <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-elevated)] p-3">
+                <p class="text-xs uppercase tracking-wide text-muted">Peso aferido</p>
+                <p class="mt-1 text-3xl font-black text-[var(--color-primary)]">
+                    {{ scaleMeasuredWeightLabel }}
+                </p>
+                <p class="mt-1 text-xs text-muted">
+                    Fonte: {{ scaleMeasurementModal.source || '--' }}
+                    <span v-if="scaleMeasurementModal.stable === true"> · estável</span>
+                    <span v-else-if="scaleMeasurementModal.stable === false"> · instável</span>
+                </p>
+            </div>
+
+            <p v-if="scaleMeasurementModal.error" class="text-sm text-danger">{{ scaleMeasurementModal.error }}</p>
+
+            <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <AppButton
+                    variant="secondary"
+                    :loading="scaleMeasurementModal.loading"
+                    :disabled="scaleMeasurementModal.loading"
+                    @click="readScaleForModal"
+                >
+                    Ler balança
+                </AppButton>
+                <div class="flex items-center gap-2">
+                    <AppButton variant="ghost" @click="closeScaleMeasurementModal">Cancelar</AppButton>
+                    <AppButton
+                        ref="scaleApplyButtonRef"
+                        :disabled="!canApplyScaleMeasurement"
+                        @click="applyScaleMeasurement"
+                    >
+                        Aplicar peso
+                    </AppButton>
+                </div>
+            </div>
+        </div>
+    </AppModal>
+    <AppModal
         :open="adjustmentModal.open"
         :title="adjustmentModalTitle"
         width-class="max-w-md"
@@ -3159,10 +3658,24 @@ onBeforeUnmount(() => {
             </div>
 
             <div v-else class="grid grid-cols-1 gap-4">
-                <AppSelect v-model="adjustmentForm.mode" label="Tipo de ajuste">
-                    <option value="value">Valor (R$)</option>
-                    <option value="percent">Percentual (%)</option>
-                </AppSelect>
+                <div class="adjustment-mode-toggle" role="group" aria-label="Tipo de ajuste">
+                    <button
+                        type="button"
+                        class="adjustment-mode-toggle__button"
+                        :class="{ 'is-active': adjustmentForm.mode === 'value' }"
+                        @click="setAdjustmentMode('value')"
+                    >
+                        R$ Valor
+                    </button>
+                    <button
+                        type="button"
+                        class="adjustment-mode-toggle__button"
+                        :class="{ 'is-active': adjustmentForm.mode === 'percent' }"
+                        @click="setAdjustmentMode('percent')"
+                    >
+                        % Percentual
+                    </button>
+                </div>
 
                 <AppInput
                     v-model="adjustmentForm.amount"
@@ -3777,6 +4290,33 @@ onBeforeUnmount(() => {
 
 :global(.pos-shell.pos-mode-totem-vertical .totem-order-footer) {
     grid-template-columns: 1fr;
+}
+
+.adjustment-mode-toggle {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+}
+
+.adjustment-mode-toggle__button {
+    min-height: 2.5rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-elevated);
+    color: var(--color-text);
+    font-size: 0.86rem;
+    font-weight: 800;
+    transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.adjustment-mode-toggle__button:hover {
+    border-color: color-mix(in srgb, var(--color-primary) 55%, var(--color-border));
+}
+
+.adjustment-mode-toggle__button.is-active {
+    border-color: color-mix(in srgb, var(--color-primary) 78%, var(--color-border));
+    background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-elevated));
+    color: var(--color-primary);
 }
 
 @media (max-width: 960px) {

@@ -9,11 +9,13 @@ interface KeyboardShortcutOptions {
     shouldHandleEvent?: (event: KeyboardEvent, key: string) => boolean;
 }
 
-function normalizeKey(event: KeyboardEvent): string {
-    if (event.code === 'NumpadAdd') return '+';
-    if (event.code === 'NumpadMultiply') return '*';
+function normalizeKey(event: KeyboardEvent | undefined): string {
+    const code = typeof event?.code === 'string' ? event.code : '';
+    if (code === 'NumpadAdd') return '+';
+    if (code === 'NumpadMultiply') return '*';
 
-    return event.key.toLowerCase();
+    const key = typeof event?.key === 'string' ? event.key : '';
+    return key ? key.toLowerCase() : '';
 }
 
 export function useKeyboardShortcuts(shortcuts: Record<string, ShortcutHandler>, options: KeyboardShortcutOptions = {}) {
@@ -23,6 +25,8 @@ export function useKeyboardShortcuts(shortcuts: Record<string, ShortcutHandler>,
         if (options.enabled && !options.enabled()) return;
 
         const key = normalizeKey(event);
+        if (!key) return;
+
         const shortcut = shortcuts[key];
         if (!shortcut) return;
 

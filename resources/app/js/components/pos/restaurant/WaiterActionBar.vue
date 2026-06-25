@@ -5,10 +5,10 @@ import AppButton from '../../ui/AppButton.vue';
 const quickActions = Object.freeze([
     { id: 'send-kitchen', label: 'Enviar para cozinha/bar', icon: CheckCheck },
     { id: 'new-command', label: 'Nova comanda', icon: PlusCircle },
-    { id: 'observation', label: 'Observacao', icon: MessageSquareText },
+    { id: 'observation', label: 'Observação', icon: MessageSquareText },
     { id: 'transfer-items', label: 'Transferir itens', icon: BringToFront },
     { id: 'merge-commands', label: 'Juntar fichas', icon: SplitSquareVertical },
-    { id: 'conference', label: 'Conferencia', icon: FileCheck2 },
+    { id: 'conference', label: 'Conferência', icon: FileCheck2 },
 ]);
 
 const emit = defineEmits(['action']);

@@ -23,6 +23,7 @@ import {
     Network,
     PackageOpen,
     Percent,
+    PencilLine,
     Plus,
     Ruler,
     Search,
@@ -39,6 +40,7 @@ import {
     DollarSign,
 } from 'lucide-vue-next';
 import api from '../../lib/api';
+import { getGtinLength, normalizeGtinType, sanitizeGtin, validateGtin } from '../../lib/gtin';
 import AppButton from '../../components/ui/AppButton.vue';
 import AppInput from '../../components/ui/AppInput.vue';
 import AppCombobox from '../../components/ui/AppCombobox.vue';
@@ -50,6 +52,13 @@ import AppBadge from '../../components/ui/AppBadge.vue';
 import AppModal from '../../components/ui/AppModal.vue';
 import AppToast from '../../components/ui/AppToast.vue';
 import SettingsEmptyState from '../../components/settings/SettingsEmptyState.vue';
+import {
+    formatQuantityInputValue,
+    normalizeQuantityForApi,
+    sanitizeQuantityInput,
+    unitAllowsFractionalQuantity,
+    validateQuantityInput,
+} from '../../lib/quantity';
 import {
     calculateCompositionCosts,
     calculateSuggestedPricing,
@@ -128,6 +137,11 @@ const historicoPage = ref(1);
 const historicoRowsPerPage = ref(10);
 const historicoModalOpen = ref(false);
 const historicoModalAudit = ref(null);
+const ncmLookupModalOpen = ref(false);
+const ncmLookupSearch = ref('');
+const ncmLookupRows = ref([]);
+const ncmLookupLoading = ref(false);
+const ncmLookupError = ref('');
 const historicoFilterDraft = reactive({
     data_inicio: '',
     data_fim: '',
@@ -152,10 +166,10 @@ const tabs = [
 ];
 
 const estoqueSubTabs = [
-    { id: 'dados_basicos', label: 'Dados Basicos' },
-    { id: 'codigo_fornecedor', label: 'Codigo do Fornecedor' },
+    { id: 'dados_basicos', label: 'Dados Básicos' },
+    { id: 'codigo_fornecedor', label: 'Código do Fornecedor' },
     { id: 'saldo_lotes', label: 'Saldo de Lotes' },
-    { id: 'dimensoes', label: 'Dimensoes' },
+    { id: 'dimensoes', label: 'Dimensões' },
     { id: 'unidades_embalagens', label: 'Unidades e Embalagens' },
 ];
 
@@ -270,11 +284,11 @@ const form = reactive({
         quantidade_alerta: '',
     },
     estoque_detalhado: {
-        consumo_medio_diario: '',
+        consumo_médio_diario: '',
         lead_time_compra: '',
         lead_time_entrega: '',
         lead_time_recebimento: '',
-        estoque_seguranca: '',
+        estoque_segurança: '',
         lote_minimo_compra: '',
         frequencia_compra: '',
         ponto_pedido: '',
@@ -364,6 +378,12 @@ const isEditing = computed(() => !!form.id);
 const currentProductId = computed(() => String(route.params.produtoId || ''));
 const isCreateRoute = computed(() => currentProductId.value === '' || currentProductId.value === 'novo');
 const canSave = computed(() => form.descricao.trim() !== '');
+const barcodeMainMaxLength = computed(() => getGtinLength(form.ean_tipo) || 14);
+const barcodeMainError = computed(() => {
+    if (!String(form.ean_codigo || '').trim()) return '';
+
+    return validateGtin(form.ean_codigo, form.ean_tipo).message;
+});
 const shortDescriptionLength = computed(() => String(form.descricao_curta || '').trim().length);
 const descricaoSiteLength = computed(() => String(form.descricao_site || '').trim().length);
 const descricaoDetalhadaLength = computed(() => String(form.descricao_detalhada || '').trim().length);
@@ -375,6 +395,21 @@ const parameterQuickModalTitle = computed(() => {
 
 const formattedCreatedAt = computed(() => normalizeDateString(form.created_at));
 const formattedUpdatedAt = computed(() => normalizeDateString(form.updated_at));
+const barcodeModalCodigoMaxLength = computed(() => getGtinLength(barcodeModalForm.tipo_codigo) || 14);
+const barcodeModalCaixaMaxLength = computed(() => getGtinLength(barcodeModalForm.tipo_codigo_caixa) || 14);
+const barcodeModalCodigoError = computed(() => {
+    if (!String(barcodeModalForm.codigo || '').trim()) return '';
+
+    return validateGtin(barcodeModalForm.codigo, barcodeModalForm.tipo_codigo).message;
+});
+const barcodeModalCaixaError = computed(() => {
+    return validateGtin(barcodeModalForm.codigo_caixa, barcodeModalForm.tipo_codigo_caixa, { required: false }).message;
+});
+const barcodeModalCanSave = computed(() => {
+    return String(barcodeModalForm.codigo || '').trim() !== ''
+        && barcodeModalCodigoError.value === ''
+        && barcodeModalCaixaError.value === '';
+});
 const barcodeModalForm = reactive({
     tipo_codigo: 'GTIN-13',
     codigo: '',
@@ -394,9 +429,14 @@ const compositionModalForm = reactive({
     operational_cost: '0',
     campos_adicionais: [],
 });
+const stockReductionConfirmModal = reactive({
+    open: false,
+    nextValue: true,
+});
 
 let compositionProductSearchTimer = null;
 let toastTimeout = null;
+let ncmLookupSearchTimer = null;
 
 const compositionFieldNameTemplates = [
     { id: 'personalizado', label: 'Personalizado' },
@@ -415,10 +455,10 @@ const compositionFieldNameTemplates = [
 const compositionFieldTypeOptions = [
     { id: 'texto_curto', label: 'Texto curto' },
     { id: 'texto_longo', label: 'Texto longo' },
-    { id: 'numero_inteiro', label: 'Numero inteiro' },
-    { id: 'numero_decimal', label: 'Numero decimal' },
+    { id: 'numero_inteiro', label: 'Número inteiro' },
+    { id: 'numero_decimal', label: 'Número decimal' },
     { id: 'data', label: 'Data' },
-    { id: 'sim_nao', label: 'Sim/Nao' },
+    { id: 'sim_nao', label: 'Sim/Não' },
     { id: 'checkbox_texto', label: 'Checkbox + texto' },
 ];
 
@@ -429,6 +469,19 @@ const compositionProductOptionLabels = computed(() => (
             .filter(Boolean)
         : []
 ));
+const stockReductionConfirmTitle = computed(() =>
+    stockReductionConfirmModal.nextValue
+        ? 'Ativar redução de estoque'
+        : 'Desativar redução de estoque',
+);
+const stockReductionConfirmDescription = computed(() =>
+    stockReductionConfirmModal.nextValue
+        ? 'Ativando esta opção, a contagem e a redução de estoque serão feitas nas saídas deste produto.'
+        : 'Desativando esta opção, este produto deixará de contar e reduzir estoque nas saídas.',
+);
+const stockReductionConfirmButtonLabel = computed(() =>
+    stockReductionConfirmModal.nextValue ? 'Ativar redução' : 'Desativar redução',
+);
 
 const empresasComboboxOptions = [
     'Freeline Matriz',
@@ -446,11 +499,13 @@ const clientesComboboxOptions = [
 
 const barcodeFilteredRows = computed(() => {
     const needle = String(barcodeSearch.value || '').trim().toLowerCase();
+    const rows = (Array.isArray(form.codigos_barras) ? form.codigos_barras : [])
+        .filter((row) => String(row.codigo || '').trim() !== '');
     if (!needle) {
-        return form.codigos_barras;
+        return rows;
     }
 
-    return form.codigos_barras.filter((row) => {
+    return rows.filter((row) => {
         const code = String(row.codigo || '').toLowerCase();
         const extra = String(row.informacoes_complementares || '').toLowerCase();
         const tipo = String(row.tipo_codigo || '').toLowerCase();
@@ -760,7 +815,7 @@ const gerencialTotal = computed(() => {
     return gerencialSubtotal.value - toDecimal(form.gerencial_memoria.desconto) - toDecimal(form.gerencial_memoria.impostos_recuperaveis);
 });
 
-const estoqueAtualTotalCalc = computed(() => toDecimal(form.estoque.quantidade));
+const estoqueAtualTotalCalc = computed(() => toQuantityNumber(form.estoque.quantidade));
 const saldoTotalLotesCalc = computed(() => {
     const rows = Array.isArray(form.estoque_detalhado.saldo_lotes_rows) ? form.estoque_detalhado.saldo_lotes_rows : [];
     if (!rows.length) {
@@ -780,7 +835,7 @@ const custoMedioHistoricoCalc = computed(() => {
     let weightedTotal = 0;
 
     rows.forEach((row) => {
-        const quantity = toDecimal(row?.qtd_saldo ?? row?.quantidade ?? 0);
+        const quantity = toQuantityNumber(row?.qtd_saldo ?? row?.quantidade ?? 0);
         const cost = toDecimal(row?.custo_unitario ?? 0);
         quantityTotal += quantity;
         weightedTotal += quantity * cost;
@@ -801,7 +856,7 @@ const custoAtualMedioCalc = computed(() => {
 const margemRealOperacionalCalc = computed(() => gerencialMargemReal.value);
 const fornecedorUltimaReferenciaLabel = computed(() => {
     const value = String(form.estoque_detalhado.fornecedor_ultima_referencia || form.estoque_detalhado.codigo_fornecedor || '').trim();
-    return value || 'Nao identificado';
+    return value || 'Não identificado';
 });
 const referenciaCustoDataLabel = computed(() => {
     const value = String(form.estoque_detalhado.referencia_custo_data || '').trim();
@@ -810,6 +865,39 @@ const referenciaCustoDataLabel = computed(() => {
     if (Number.isNaN(parsed.getTime())) return value;
     return parsed.toLocaleDateString('pt-BR');
 });
+const unidadeMedidaProdutoLabel = computed(() => {
+    return supportData.unidades_medida.find((row) => String(row.id) === String(form.unidade_medida_id))?.unidade || '';
+});
+const unidadeMedidaProduto = computed(() => {
+    return supportData.unidades_medida.find((row) => String(row.id) === String(form.unidade_medida_id)) || null;
+});
+const estoqueQuantidadeUnit = computed(() => {
+    const configuredUnit = String(form.estoque_detalhado.unidade_base_estoque || unidadeMedidaProdutoLabel.value || '').trim();
+    if (configuredUnit) return configuredUnit.toUpperCase();
+
+    return form.estoque_detalhado.atributos_logisticos_flags?.pesavel ? 'KG' : 'UN';
+});
+const estoqueQuantidadePermiteDecimal = computed(() => {
+    const unitDecimals = Number(unidadeMedidaProduto.value?.decimais ?? 0);
+    return !!form.permite_fracionamento || unitDecimals > 0 || unitAllowsFractionalQuantity(estoqueQuantidadeUnit.value);
+});
+const pontoPedidoCalculado = computed(() => {
+    const consumoDiario = toQuantityNumber(form.estoque_detalhado.consumo_médio_diario);
+    const leadCompra = Math.max(0, parseLocaleNumber(form.estoque_detalhado.lead_time_compra, 0));
+    const leadEntrega = Math.max(0, parseLocaleNumber(form.estoque_detalhado.lead_time_entrega, 0));
+    const leadRecebimento = Math.max(0, parseLocaleNumber(form.estoque_detalhado.lead_time_recebimento, 0));
+    const estoqueSeguranca = toQuantityNumber(form.estoque_detalhado.estoque_segurança);
+
+    return Math.max(0, consumoDiario * (leadCompra + leadEntrega + leadRecebimento) + estoqueSeguranca);
+});
+const pontoPedidoInputValue = computed(() => {
+    if (form.estoque_detalhado.ponto_pedido_override) {
+        return form.estoque_detalhado.ponto_pedido;
+    }
+
+    return formatQuantityForInput(pontoPedidoCalculado.value, 'api');
+});
+const canRequestStockAdjustment = computed(() => !isCreateRoute.value && String(form.id || currentProductId.value || '').trim() !== '');
 
 const historicoUsuariosOptions = computed(() => {
     const users = new Set();
@@ -825,6 +913,22 @@ const historicoEventsOptions = [
     { id: 'updated', label: 'updated' },
     { id: 'deleted', label: 'deleted' },
 ];
+
+function goToStockAdjustmentRequest() {
+    if (!canRequestStockAdjustment.value) return;
+
+    router.push({
+        path: '/configuracoes/estoque/ajustes',
+        query: {
+            open: '1',
+            product_id: form.id || currentProductId.value,
+            product_name: form.descricao || form.descricao_curta || 'Produto',
+            product_code: form.codigo_operacional || form.cod_sku || '',
+            stock: form.estoque.quantidade || '0',
+            unit: estoqueQuantidadeUnit.value,
+        },
+    });
+}
 
 const historicoFilteredRows = computed(() => {
     return form.auditoria.filter((row) => {
@@ -891,6 +995,64 @@ watch(historicoRowsPerPage, () => {
     historicoPage.value = 1;
 });
 
+watch(ncmLookupSearch, () => {
+    if (!ncmLookupModalOpen.value) return;
+    queueNcmLookupSearch();
+});
+
+watch(
+    () => [form.ean_tipo, form.ean_codigo],
+    () => {
+        form.ean_tipo = normalizeGtinType(form.ean_tipo);
+        const normalized = sanitizeGtin(form.ean_codigo, barcodeMainMaxLength.value);
+        if (form.ean_codigo !== normalized) {
+            form.ean_codigo = normalized;
+        }
+    },
+);
+
+watch(
+    () => [form.unidade_medida_id, form.permite_fracionamento, form.estoque_detalhado.unidade_base_estoque],
+    () => {
+        ['quantidade', 'quantidade_minima', 'quantidade_maxima', 'quantidade_minima_vendavel', 'quantidade_alerta']
+            .forEach((field) => formatQuantityField(form.estoque, field));
+        ['consumo_médio_diario', 'estoque_segurança', 'lote_minimo_compra', 'ponto_pedido']
+            .forEach((field) => formatQuantityField(form.estoque_detalhado, field));
+    },
+);
+
+watch(
+    () => form.estoque_detalhado.ponto_pedido_override,
+    (manualOverride) => {
+        if (!manualOverride) return;
+        if (String(form.estoque_detalhado.ponto_pedido || '').trim() !== '') return;
+
+        form.estoque_detalhado.ponto_pedido = formatQuantityForInput(pontoPedidoCalculado.value, 'api');
+    },
+);
+
+watch(
+    () => [barcodeModalForm.tipo_codigo, barcodeModalForm.codigo],
+    () => {
+        barcodeModalForm.tipo_codigo = normalizeGtinType(barcodeModalForm.tipo_codigo);
+        const normalized = sanitizeGtin(barcodeModalForm.codigo, barcodeModalCodigoMaxLength.value);
+        if (barcodeModalForm.codigo !== normalized) {
+            barcodeModalForm.codigo = normalized;
+        }
+    },
+);
+
+watch(
+    () => [barcodeModalForm.tipo_codigo_caixa, barcodeModalForm.codigo_caixa],
+    () => {
+        barcodeModalForm.tipo_codigo_caixa = normalizeGtinType(barcodeModalForm.tipo_codigo_caixa);
+        const normalized = sanitizeGtin(barcodeModalForm.codigo_caixa, barcodeModalCaixaMaxLength.value);
+        if (barcodeModalForm.codigo_caixa !== normalized) {
+            barcodeModalForm.codigo_caixa = normalized;
+        }
+    },
+);
+
 function resetForm() {
     form.id = '';
     form.estabelecimento_id = '';
@@ -941,11 +1103,11 @@ function resetForm() {
         quantidade_alerta: '',
     };
     form.estoque_detalhado = {
-        consumo_medio_diario: '',
+        consumo_médio_diario: '',
         lead_time_compra: '',
         lead_time_entrega: '',
         lead_time_recebimento: '',
-        estoque_seguranca: '',
+        estoque_segurança: '',
         lote_minimo_compra: '',
         frequencia_compra: '',
         ponto_pedido: '',
@@ -1095,7 +1257,7 @@ function applyFormPayload(payload) {
         }))
         : [];
 
-    form.codigos_barras = Array.isArray(payload.codigos_barras)
+    form.codigos_barras = normalizeBarcodeRows(Array.isArray(payload.codigos_barras)
         ? payload.codigos_barras.map((row) => ({
             id: row.id || '',
             produto_apresentacao_id: row.produto_apresentacao_id || '',
@@ -1105,7 +1267,7 @@ function applyFormPayload(payload) {
             informacoes_complementares: row.informacoes_complementares || '',
             ativo: row.ativo !== false,
         }))
-        : [];
+        : []);
 
     const principalCode = form.codigos_barras.find((row) => row.principal) || form.codigos_barras[0] || null;
     form.ean_tipo = principalCode?.tipo_codigo || 'GTIN-13';
@@ -1113,26 +1275,34 @@ function applyFormPayload(payload) {
 
     const stock = payload.estoque || {};
     form.estoque = {
-        quantidade: stock.quantidade != null ? String(stock.quantidade) : '0',
-        quantidade_minima: stock.quantidade_minima != null ? String(stock.quantidade_minima) : '',
-        quantidade_maxima: stock.quantidade_maxima != null ? String(stock.quantidade_maxima) : '',
+        quantidade: stock.quantidade != null ? formatQuantityForInput(stock.quantidade, 'api') : '0',
+        quantidade_minima: stock.quantidade_minima != null ? formatQuantityForInput(stock.quantidade_minima, 'api') : '',
+        quantidade_maxima: stock.quantidade_maxima != null ? formatQuantityForInput(stock.quantidade_maxima, 'api') : '',
         numero_lote: stock.numero_lote || '',
         reduzir_estoque: stock.reduzir_estoque !== false,
-        quantidade_minima_vendavel: stock.quantidade_minima_vendavel != null ? String(stock.quantidade_minima_vendavel) : '',
-        quantidade_alerta: stock.quantidade_alerta != null ? String(stock.quantidade_alerta) : '',
+        quantidade_minima_vendavel: stock.quantidade_minima_vendavel != null ? formatQuantityForInput(stock.quantidade_minima_vendavel, 'api') : '',
+        quantidade_alerta: stock.quantidade_alerta != null ? formatQuantityForInput(stock.quantidade_alerta, 'api') : '',
     };
 
     const estoqueDetalhado = payload.atributos_logisticos?.estoque_detalhado || {};
     form.estoque_detalhado = {
         ...form.estoque_detalhado,
-        consumo_medio_diario: String(estoqueDetalhado.consumo_medio_diario || ''),
+        consumo_médio_diario: estoqueDetalhado.consumo_médio_diario != null && estoqueDetalhado.consumo_médio_diario !== ''
+            ? formatQuantityForInput(estoqueDetalhado.consumo_médio_diario, 'api')
+            : '',
         lead_time_compra: String(estoqueDetalhado.lead_time_compra || ''),
         lead_time_entrega: String(estoqueDetalhado.lead_time_entrega || ''),
         lead_time_recebimento: String(estoqueDetalhado.lead_time_recebimento || ''),
-        estoque_seguranca: String(estoqueDetalhado.estoque_seguranca || ''),
-        lote_minimo_compra: String(estoqueDetalhado.lote_minimo_compra || ''),
+        estoque_segurança: estoqueDetalhado.estoque_segurança != null && estoqueDetalhado.estoque_segurança !== ''
+            ? formatQuantityForInput(estoqueDetalhado.estoque_segurança, 'api')
+            : '',
+        lote_minimo_compra: estoqueDetalhado.lote_minimo_compra != null && estoqueDetalhado.lote_minimo_compra !== ''
+            ? formatQuantityForInput(estoqueDetalhado.lote_minimo_compra, 'api')
+            : '',
         frequencia_compra: String(estoqueDetalhado.frequencia_compra || ''),
-        ponto_pedido: String(estoqueDetalhado.ponto_pedido || ''),
+        ponto_pedido: estoqueDetalhado.ponto_pedido != null && estoqueDetalhado.ponto_pedido !== ''
+            ? formatQuantityForInput(estoqueDetalhado.ponto_pedido, 'api')
+            : '',
         ponto_pedido_override: !!estoqueDetalhado.ponto_pedido_override,
         nao_fracionado: String(estoqueDetalhado.nao_fracionado || 'nao'),
         controla_validade_lote: String(estoqueDetalhado.controla_validade_lote || 'sim'),
@@ -1274,6 +1444,117 @@ function parseLocaleNumber(value, fallback = 0) {
 
     const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function quantityInputOptions() {
+    return {
+        fractional: estoqueQuantidadePermiteDecimal.value,
+        precision: 3,
+    };
+}
+
+function toQuantityNumber(value, fallback = 0) {
+    if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : fallback;
+    }
+
+    const normalized = normalizeQuantityForApi(value, quantityInputOptions());
+    if (normalized !== '') {
+        const parsed = Number(normalized);
+        return Number.isFinite(parsed) ? parsed : fallback;
+    }
+
+    const parsed = Number(String(value ?? '').replace(',', '.'));
+    return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function formatQuantityForInput(value, source = 'ui') {
+    return formatQuantityInputValue(value, {
+        ...quantityInputOptions(),
+        source,
+    });
+}
+
+function formatQuantityDisplay(value) {
+    return Number(value || 0).toLocaleString('pt-BR', {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: estoqueQuantidadePermiteDecimal.value ? 3 : 0,
+    });
+}
+
+function updateQuantityField(scope, field, value) {
+    scope[field] = sanitizeQuantityInput(value, quantityInputOptions());
+}
+
+function formatQuantityField(scope, field) {
+    scope[field] = formatQuantityForInput(scope[field]);
+}
+
+function normalizeQuantityPayloadValue(value, fallback = null) {
+    const text = String(value ?? '').trim();
+    if (text === '') return fallback;
+
+    const normalized = normalizeQuantityForApi(value, quantityInputOptions());
+    return normalized === '' ? fallback : normalized;
+}
+
+function openNcmLookupModal() {
+    ncmLookupSearch.value = String(form.fiscal_ncm || '').trim();
+    ncmLookupModalOpen.value = true;
+    loadNcmLookupRows();
+}
+
+function closeNcmLookupModal() {
+    ncmLookupModalOpen.value = false;
+}
+
+function queueNcmLookupSearch() {
+    if (ncmLookupSearchTimer) clearTimeout(ncmLookupSearchTimer);
+    ncmLookupSearchTimer = setTimeout(() => {
+        loadNcmLookupRows();
+    }, 300);
+}
+
+async function loadNcmLookupRows() {
+    if (String(ncmLookupSearch.value || '').trim() === '') {
+        ncmLookupRows.value = [];
+        ncmLookupError.value = '';
+        ncmLookupLoading.value = false;
+        return;
+    }
+
+    ncmLookupLoading.value = true;
+    ncmLookupError.value = '';
+
+    try {
+        const { data } = await api.get('/catalog/products/ncms', {
+            params: {
+                search: String(ncmLookupSearch.value || '').trim(),
+                limit: 50,
+            },
+        });
+        ncmLookupRows.value = Array.isArray(data?.data) ? data.data : [];
+    } catch (requestError) {
+        ncmLookupRows.value = [];
+        ncmLookupError.value = requestError?.response?.data?.message || 'Não foi possível consultar os NCMs no NotaAgil.';
+    } finally {
+        ncmLookupLoading.value = false;
+    }
+}
+
+function selectNcmLookupRow(row) {
+    const ncm = normalizeNcmValue(row?.ncm);
+    if (!ncm) return;
+
+    form.fiscal_ncm = ncm;
+    form.fiscal_cest = String(row?.cest || form.fiscal_cest || '').trim();
+
+    if (!form.fiscal_item_profile_id && row?.id) {
+        form.fiscal_item_profile_id = row.id;
+    }
+
+    closeNcmLookupModal();
+    showSaveToast('NCM aplicado ao produto.');
 }
 
 function toDecimal(value) {
@@ -1678,21 +1959,50 @@ function goToHistoricoNextPage() {
     }
 }
 
-function syncPrimaryBarcodeFromBasic() {
-    const code = String(form.ean_codigo || '').trim();
-    const type = String(form.ean_tipo || 'GTIN-13').trim() || 'GTIN-13';
+function normalizeBarcodeRows(rows = []) {
+    const normalized = (Array.isArray(rows) ? rows : [])
+        .map((row) => ({
+            id: row.id || '',
+            produto_apresentacao_id: row.produto_apresentacao_id || '',
+            codigo: sanitizeGtin(row.codigo),
+            tipo_codigo: normalizeGtinType(row.tipo_codigo || 'GTIN-13'),
+            principal: !!row.principal,
+            informacoes_complementares: String(row.informacoes_complementares || '').trim(),
+            ativo: row.ativo !== false,
+        }))
+        .filter((row) => row.codigo !== '');
+
+    if (normalized.length && !normalized.some((row) => row.principal)) {
+        normalized[0].principal = true;
+    }
+
+    return normalized;
+}
+
+function syncBasicBarcodeFromPrimary() {
+    const rows = normalizeBarcodeRows(form.codigos_barras);
+    const primary = rows.find((row) => row.principal) || rows[0] || null;
+    form.ean_tipo = primary?.tipo_codigo || 'GTIN-13';
+    form.ean_codigo = primary?.codigo || '';
+}
+
+function syncBarcodeRowsFromBasicEan() {
+    const type = normalizeGtinType(form.ean_tipo || 'GTIN-13');
+    const code = sanitizeGtin(form.ean_codigo, getGtinLength(type));
+    const rows = normalizeBarcodeRows(form.codigos_barras);
 
     if (!code) {
+        form.codigos_barras = rows;
         return;
     }
 
-    let primary = form.codigos_barras.find((row) => row.principal);
-    if (!primary) {
-        primary = form.codigos_barras[0];
-    }
-
-    if (!primary) {
-        form.codigos_barras.unshift({
+    const primary = rows.find((row) => row.principal) || rows[0] || null;
+    if (primary) {
+        primary.codigo = code;
+        primary.tipo_codigo = type;
+        primary.principal = true;
+    } else {
+        rows.unshift({
             id: '',
             produto_apresentacao_id: '',
             codigo: code,
@@ -1701,12 +2011,9 @@ function syncPrimaryBarcodeFromBasic() {
             informacoes_complementares: '',
             ativo: true,
         });
-        return;
     }
 
-    primary.codigo = code;
-    primary.tipo_codigo = type;
-    primary.principal = true;
+    form.codigos_barras = rows;
 }
 
 function addNivelAdicional() {
@@ -1765,15 +2072,7 @@ function removePreco(index) {
 }
 
 function addCodigoBarras() {
-    form.codigos_barras.push({
-        id: '',
-        produto_apresentacao_id: '',
-        codigo: '',
-        tipo_codigo: 'GTIN-13',
-        principal: form.codigos_barras.length === 0,
-        informacoes_complementares: '',
-        ativo: true,
-    });
+    openBarcodeModal();
 }
 
 function removeCodigoBarras(index) {
@@ -1815,8 +2114,8 @@ function closeBarcodeModal() {
 }
 
 function saveBarcodeModal() {
-    const code = String(barcodeModalForm.codigo || '').trim();
-    if (!code) {
+    const code = sanitizeGtin(barcodeModalForm.codigo, barcodeModalCodigoMaxLength.value);
+    if (!barcodeModalCanSave.value || !code) {
         return;
     }
 
@@ -1824,7 +2123,7 @@ function saveBarcodeModal() {
         id: '',
         produto_apresentacao_id: '',
         codigo: code,
-        tipo_codigo: String(barcodeModalForm.tipo_codigo || 'GTIN-13'),
+        tipo_codigo: normalizeGtinType(barcodeModalForm.tipo_codigo || 'GTIN-13'),
         principal: false,
         informacoes_complementares: String(barcodeModalForm.informacoes_complementares || '').trim(),
         ativo: barcodeModalForm.situacao === 'ativo',
@@ -1840,13 +2139,13 @@ function saveBarcodeModal() {
         form.codigos_barras.unshift(target);
     }
 
-    const codeBox = String(barcodeModalForm.codigo_caixa || '').trim();
+    const codeBox = sanitizeGtin(barcodeModalForm.codigo_caixa, barcodeModalCaixaMaxLength.value);
     if (codeBox !== '') {
         form.codigos_barras.unshift({
             id: '',
             produto_apresentacao_id: '',
             codigo: codeBox,
-            tipo_codigo: String(barcodeModalForm.tipo_codigo_caixa || 'GTIN-14'),
+            tipo_codigo: normalizeGtinType(barcodeModalForm.tipo_codigo_caixa || 'GTIN-14'),
             principal: false,
             informacoes_complementares: 'Código da caixa',
             ativo: barcodeModalForm.situacao === 'ativo',
@@ -1857,7 +2156,8 @@ function saveBarcodeModal() {
         form.cod_sku = String(barcodeModalForm.sku || '').trim();
     }
 
-    syncPrimaryBarcodeFromBasic();
+    form.codigos_barras = normalizeBarcodeRows(form.codigos_barras);
+    syncBasicBarcodeFromPrimary();
     closeBarcodeModal();
 }
 
@@ -2493,6 +2793,7 @@ function stopCompositionGridLinkDrag(event) {
 onBeforeUnmount(() => {
     cancelCompositionGridLinkMode();
     if (toastTimeout) clearTimeout(toastTimeout);
+    if (ncmLookupSearchTimer) clearTimeout(ncmLookupSearchTimer);
 });
 
 function resetCompositionModalForm() {
@@ -2807,6 +3108,22 @@ function toggleEstoqueAtributo(key) {
     form.estoque_detalhado.atributos_logisticos_flags[key] = !current;
 }
 
+function toggleReduzirEstoque() {
+    const current = !!form.estoque.reduzir_estoque;
+
+    stockReductionConfirmModal.nextValue = !current;
+    stockReductionConfirmModal.open = true;
+}
+
+function closeStockReductionConfirmModal() {
+    stockReductionConfirmModal.open = false;
+}
+
+function confirmStockReductionChange() {
+    form.estoque.reduzir_estoque = !!stockReductionConfirmModal.nextValue;
+    closeStockReductionConfirmModal();
+}
+
 function addEmbalagemComercial() {
     form.estoque_detalhado.embalagens.push({
         descricao: '',
@@ -2845,11 +3162,11 @@ function goToBarcodeLastPage() {
 }
 
 function buildPayload() {
-    syncPrimaryBarcodeFromBasic();
-
     const parsedLogistics = safeParseAtributosLogisticos(form.atributos_logisticos_json) || {};
+    syncBarcodeRowsFromBasicEan();
+    const codigosBarras = normalizeBarcodeRows(form.codigos_barras);
 
-    parsedLogistics.fiscal_ncm = String(form.fiscal_ncm || '').trim() || null;
+    parsedLogistics.fiscal_ncm = normalizeNcmValue(form.fiscal_ncm);
     parsedLogistics.fiscal_ncm_ex = String(form.fiscal_ncm_ex || '').trim() || null;
     parsedLogistics.fiscal_cest = String(form.fiscal_cest || '').trim() || null;
     parsedLogistics.conta_contabil = String(form.conta_contabil || '').trim() || null;
@@ -2861,7 +3178,13 @@ function buildPayload() {
     parsedLogistics.descricao_detalhada = String(form.descricao_detalhada || '').trim() || null;
     parsedLogistics.empresas_vinculadas = form.empresas_vinculadas;
     parsedLogistics.clientes_vinculados = form.clientes_vinculados;
-    parsedLogistics.estoque_detalhado = form.estoque_detalhado;
+    parsedLogistics.estoque_detalhado = {
+        ...form.estoque_detalhado,
+        consumo_médio_diario: normalizeQuantityPayloadValue(form.estoque_detalhado.consumo_médio_diario),
+        estoque_segurança: normalizeQuantityPayloadValue(form.estoque_detalhado.estoque_segurança),
+        lote_minimo_compra: normalizeQuantityPayloadValue(form.estoque_detalhado.lote_minimo_compra),
+        ponto_pedido: normalizeQuantityPayloadValue(pontoPedidoInputValue.value),
+    };
     parsedLogistics.gerencial_memoria = form.gerencial_memoria;
     const normalizedCompositions = (Array.isArray(form.informacao_adicional.composicoes)
         ? form.informacao_adicional.composicoes
@@ -2919,7 +3242,7 @@ function buildPayload() {
             vigencia_fim: row.vigencia_fim || null,
             ativo: !!row.ativo,
         })),
-        codigos_barras: form.codigos_barras.map((row) => ({
+        codigos_barras: codigosBarras.map((row) => ({
             id: row.id || undefined,
             produto_apresentacao_id: row.produto_apresentacao_id || null,
             codigo: row.codigo,
@@ -2929,13 +3252,13 @@ function buildPayload() {
             ativo: !!row.ativo,
         })),
         estoque: {
-            quantidade: Number(form.estoque.quantidade || 0),
-            quantidade_minima: form.estoque.quantidade_minima === '' ? null : Number(form.estoque.quantidade_minima),
-            quantidade_maxima: form.estoque.quantidade_maxima === '' ? null : Number(form.estoque.quantidade_maxima),
+            quantidade: normalizeQuantityPayloadValue(form.estoque.quantidade, '0'),
+            quantidade_minima: normalizeQuantityPayloadValue(form.estoque.quantidade_minima),
+            quantidade_maxima: normalizeQuantityPayloadValue(form.estoque.quantidade_maxima),
             numero_lote: form.estoque.numero_lote || null,
             reduzir_estoque: !!form.estoque.reduzir_estoque,
-            quantidade_minima_vendavel: form.estoque.quantidade_minima_vendavel === '' ? null : Number(form.estoque.quantidade_minima_vendavel),
-            quantidade_alerta: form.estoque.quantidade_alerta === '' ? null : Number(form.estoque.quantidade_alerta),
+            quantidade_minima_vendavel: normalizeQuantityPayloadValue(form.estoque.quantidade_minima_vendavel),
+            quantidade_alerta: normalizeQuantityPayloadValue(form.estoque.quantidade_alerta),
         },
     };
 }
@@ -2969,7 +3292,6 @@ async function bootstrap() {
         if (isCreateRoute.value) {
             resetForm();
             addPreco();
-            addCodigoBarras();
         } else {
             await loadProduct(currentProductId.value);
         }
@@ -2993,6 +3315,11 @@ function showSaveToast(message, tone = 'success') {
 
 function normalizeValidationFieldKey(field) {
     return String(field || '').replace(/\.\d+(?=\.|$)/g, '.*');
+}
+
+function normalizeNcmValue(value) {
+    const digits = String(value || '').replace(/\D+/g, '');
+    return digits || null;
 }
 
 function resolveValidationFieldLabel(field) {
@@ -3066,12 +3393,84 @@ function extractValidationIssues(rawErrors) {
         .filter(Boolean);
 }
 
+function collectBarcodeValidationIssues() {
+    syncBarcodeRowsFromBasicEan();
+
+    return normalizeBarcodeRows(form.codigos_barras)
+        .map((row) => {
+            const message = validateGtin(row.codigo, row.tipo_codigo).message;
+            if (message) return `Código de barras: ${message}`;
+
+            const isBoxCode = String(row.informacoes_complementares || '').toLowerCase().includes('caixa');
+            if (isBoxCode && normalizeGtinType(row.tipo_codigo) === 'EAN-8') {
+                return 'Código de barras da caixa aceita somente GTIN-14 ou GTIN-13.';
+            }
+
+            return '';
+        })
+        .filter(Boolean);
+}
+
+function validateProductBarcodesBeforeSave() {
+    const issues = collectBarcodeValidationIssues();
+    if (!issues.length) return true;
+
+    validationIssues.value = issues;
+    error.value = issues[0];
+    activeTab.value = 'codigo_barras';
+    showSaveToast('Revise os códigos de barras antes de salvar.', 'danger');
+
+    return false;
+}
+
+function collectQuantityValidationIssues() {
+    const fields = [
+        ['Quantidade em estoque', form.estoque.quantidade],
+        ['Quantidade mínima', form.estoque.quantidade_minima],
+        ['Quantidade máxima', form.estoque.quantidade_maxima],
+        ['Quantidade mínima vendável', form.estoque.quantidade_minima_vendavel],
+        ['Quantidade de alerta', form.estoque.quantidade_alerta],
+        ['Consumo médio diário', form.estoque_detalhado.consumo_médio_diario],
+        ['Estoque segurança', form.estoque_detalhado.estoque_segurança],
+        ['Lote mínimo compra', form.estoque_detalhado.lote_minimo_compra],
+        ['Ponto de pedido', pontoPedidoInputValue.value],
+    ];
+
+    return fields
+        .filter(([, value]) => String(value ?? '').trim() !== '')
+        .map(([label, value]) => {
+            const validation = validateQuantityInput(value, quantityInputOptions());
+            return validation.valid ? '' : `${label}: ${validation.message}`;
+        })
+        .filter(Boolean);
+}
+
+function validateProductQuantitiesBeforeSave() {
+    const issues = collectQuantityValidationIssues();
+    if (!issues.length) return true;
+
+    validationIssues.value = issues;
+    error.value = issues[0];
+    activeTab.value = 'estoque';
+    showSaveToast('Revise as quantidades antes de salvar.', 'danger');
+
+    return false;
+}
+
 async function save() {
     if (!canSave.value) {
         error.value = 'Preencha pelo menos a descrição completa do produto.';
         validationIssues.value = ['Descrição completa: campo obrigatório.'];
         activeTab.value = 'dados_basicos';
         showSaveToast('Revise os campos obrigatórios antes de salvar.', 'danger');
+        return;
+    }
+
+    if (!validateProductBarcodesBeforeSave()) {
+        return;
+    }
+
+    if (!validateProductQuantitiesBeforeSave()) {
         return;
     }
 
@@ -3333,8 +3732,8 @@ onMounted(bootstrap);
                 <template v-if="!loading">
                     <section v-if="activeTab === 'dados_basicos'" class="space-y-4">
                         <div class="product-basic-title-wrap">
-                            <h2 class="product-basic-title">Dados Basicos</h2>
-                            <p class="product-basic-subtitle">Adicione os Dados Basicos do Produto</p>
+                            <h2 class="product-basic-title">Dados Básicos</h2>
+                            <p class="product-basic-subtitle">Adicione os Dados Básicos do Produto</p>
                         </div>
 
                         <div class="product-card">
@@ -3370,8 +3769,16 @@ onMounted(bootstrap);
                                                 <option value="GTIN-14">GTIN-14</option>
                                                 <option value="EAN-8">EAN-8</option>
                                             </select>
-                                            <input v-model="form.ean_codigo" class="ui-field ean-code" placeholder="0000000000000">
+                                            <input
+                                                v-model="form.ean_codigo"
+                                                class="ui-field ean-code"
+                                                :class="{ 'ui-field-error': barcodeMainError }"
+                                                :maxlength="barcodeMainMaxLength"
+                                                inputmode="numeric"
+                                                placeholder="0000000000000"
+                                            >
                                         </div>
+                                        <span v-if="barcodeMainError" class="ui-field-error-text">{{ barcodeMainError }}</span>
                                     </label>
                                 </div>
 
@@ -3478,7 +3885,7 @@ onMounted(bootstrap);
                                     <span class="ui-label">NCM*</span>
                                     <div class="field-with-icon">
                                         <input v-model="form.fiscal_ncm" class="ui-field product-fiscal-short-input" placeholder="Ex: 1234.56.78">
-                                        <button type="button" class="input-icon-btn" title="Buscar NCM">
+                                        <button type="button" class="input-icon-btn" title="Buscar NCM" @click="openNcmLookupModal">
                                             <Search :size="15" />
                                         </button>
                                     </div>
@@ -3657,8 +4064,8 @@ onMounted(bootstrap);
 
                     <section v-if="activeTab === 'codigo_barras'" class="space-y-4">
                         <div class="product-basic-title-wrap">
-                            <h2 class="product-basic-title">Codigo de Barras</h2>
-                            <p class="product-basic-subtitle">Adicione os codigos de barras do produto.</p>
+                            <h2 class="product-basic-title">Código de Barras</h2>
+                            <p class="product-basic-subtitle">Adicione os códigos de barras do produto.</p>
                         </div>
 
                         <div class="product-card">
@@ -3683,13 +4090,13 @@ onMounted(bootstrap);
                                         <Search :size="18" class="barcode-search-icon" />
                                     </div>
                                     <div class="barcode-pages-wrap">
-                                        <span>Linhas por pagina</span>
+                                        <span>Linhas por página</span>
                                         <select v-model="barcodeRowsPerPage" class="ui-field barcode-page-select">
                                             <option :value="10">10</option>
                                             <option :value="20">20</option>
                                             <option :value="50">50</option>
                                         </select>
-                                        <span>Pagina {{ barcodePage }} de {{ barcodeTotalPages }}</span>
+                                        <span>Página {{ barcodePage }} de {{ barcodeTotalPages }}</span>
                                         <div class="barcode-nav-btns">
                                             <button type="button" class="nav-icon-btn" @click="goToBarcodeFirstPage"><ChevronsLeft :size="16" /></button>
                                             <button type="button" class="nav-icon-btn" @click="goToBarcodePrevPage"><ChevronLeft :size="16" /></button>
@@ -3746,8 +4153,16 @@ onMounted(bootstrap);
                                                 <option value="GTIN-14">GTIN-14</option>
                                                 <option value="EAN-8">EAN-8</option>
                                             </select>
-                                            <input v-model="barcodeModalForm.codigo" class="ui-field ean-code barcode-ean-code" placeholder="7891234567895">
+                                            <input
+                                                v-model="barcodeModalForm.codigo"
+                                                class="ui-field ean-code barcode-ean-code"
+                                                :class="{ 'ui-field-error': barcodeModalCodigoError }"
+                                                :maxlength="barcodeModalCodigoMaxLength"
+                                                inputmode="numeric"
+                                                placeholder="7891234567895"
+                                            >
                                         </div>
+                                        <span v-if="barcodeModalCodigoError" class="ui-field-error-text">{{ barcodeModalCodigoError }}</span>
                                     </label>
                                 </div>
                                 <AppInput
@@ -3772,8 +4187,16 @@ onMounted(bootstrap);
                                                 <option value="GTIN-14">GTIN-14</option>
                                                 <option value="GTIN-13">GTIN-13</option>
                                             </select>
-                                            <input v-model="barcodeModalForm.codigo_caixa" class="ui-field ean-code barcode-ean-code" placeholder="17891234567892">
+                                            <input
+                                                v-model="barcodeModalForm.codigo_caixa"
+                                                class="ui-field ean-code barcode-ean-code"
+                                                :class="{ 'ui-field-error': barcodeModalCaixaError }"
+                                                :maxlength="barcodeModalCaixaMaxLength"
+                                                inputmode="numeric"
+                                                placeholder="17891234567892"
+                                            >
                                         </div>
+                                        <span v-if="barcodeModalCaixaError" class="ui-field-error-text">{{ barcodeModalCaixaError }}</span>
                                     </label>
                                 </div>
                                 <AppInput
@@ -3786,7 +4209,7 @@ onMounted(bootstrap);
 
                             <div class="barcode-modal-actions">
                                 <AppButton variant="secondary" @click="closeBarcodeModal">Cancelar</AppButton>
-                                <AppButton @click="saveBarcodeModal">Salvar</AppButton>
+                                <AppButton :disabled="!barcodeModalCanSave" @click="saveBarcodeModal">Salvar</AppButton>
                             </div>
                         </AppModal>
                     </section>
@@ -3846,13 +4269,13 @@ onMounted(bootstrap);
                                             <Search :size="18" class="barcode-search-icon" />
                                         </div>
                                         <div class="barcode-pages-wrap">
-                                            <span>Linhas por pagina</span>
+                                            <span>Linhas por página</span>
                                             <select v-model="composicaoRowsPerPage" class="ui-field barcode-page-select">
                                                 <option :value="10">10</option>
                                                 <option :value="20">20</option>
                                                 <option :value="50">50</option>
                                             </select>
-                                            <span>Pagina {{ composicaoPage }} de {{ composicaoTotalPages }}</span>
+                                            <span>Página {{ composicaoPage }} de {{ composicaoTotalPages }}</span>
                                             <div class="barcode-nav-btns">
                                                 <button type="button" class="nav-icon-btn" @click="goToComposicaoFirstPage"><ChevronsLeft :size="16" /></button>
                                                 <button type="button" class="nav-icon-btn" @click="goToComposicaoPrevPage"><ChevronLeft :size="16" /></button>
@@ -3877,7 +4300,7 @@ onMounted(bootstrap);
                                         :class="{ 'has-target': compositionGridPointer.targetId }"
                                         :style="{ left: `${compositionGridPointer.x + 14}px`, top: `${compositionGridPointer.y + 14}px` }"
                                     >
-                                        {{ compositionGridPointer.targetId ? 'Solte para conectar' : 'Arraste ate um produto' }}
+                                        {{ compositionGridPointer.targetId ? 'Solte para conectar' : 'Arraste até um produto' }}
                                     </div>
 
                                     <AppTable class="composition-table">
@@ -4350,7 +4773,7 @@ onMounted(bootstrap);
                             @close="closeCompositionModal"
                         >
                             <div class="space-y-5">
-                                <h3 class="text-base font-semibold text-foreground">Produtos da composicao</h3>
+                                <h3 class="text-base font-semibold text-foreground">Produtos da composição</h3>
 
                                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4 composition-modal-product-grid">
                                     <div class="ui-field-wrap">
@@ -4390,7 +4813,7 @@ onMounted(bootstrap);
                                 <AppTextarea
                                     v-model="compositionModalForm.observacao"
                                     rows="2"
-                                    label="Observacao"
+                                    label="Observação"
                                     placeholder="Ex: observacao do item"
                                 />
 
@@ -4510,7 +4933,7 @@ onMounted(bootstrap);
                                                 label="Valor"
                                             >
                                                 <option value="sim">Sim</option>
-                                                <option value="nao">Nao</option>
+                                                <option value="nao">Não</option>
                                             </AppSelect>
                                             <div v-else-if="field.tipo_campo === 'checkbox_texto'" class="space-y-3">
                                                 <AppInput
@@ -4571,8 +4994,8 @@ onMounted(bootstrap);
 
                         <div v-if="estoqueSubTab === 'dados_basicos'" class="space-y-4">
                             <div class="product-basic-title-wrap">
-                                <h2 class="product-basic-title">Dados Basicos</h2>
-                                <p class="product-basic-subtitle">Dados operacionais de estoque e planejamento de reposicao.</p>
+                                <h2 class="product-basic-title">Dados Básicos</h2>
+                                <p class="product-basic-subtitle">Dados operacionais de estoque e planejamento de reposição.</p>
                             </div>
 
                             <div class="product-card">
@@ -4601,8 +5024,8 @@ onMounted(bootstrap);
                                             <span class="calc-chip">CALCULADO</span>
                                         </div>
                                         <div class="stock-kpi-value">
-                                            <input :value="formatDecimal(estoqueAtualTotalCalc, 3)" class="ui-field stock-kpi-input" readonly>
-                                            <span class="stock-kpi-suffix">un</span>
+                                            <input :value="formatQuantityDisplay(estoqueAtualTotalCalc)" class="ui-field stock-kpi-input" readonly>
+                                            <span class="stock-kpi-suffix">{{ estoqueQuantidadeUnit }}</span>
                                         </div>
                                     </div>
 
@@ -4612,8 +5035,8 @@ onMounted(bootstrap);
                                             <span class="calc-chip">CALCULADO</span>
                                         </div>
                                         <div class="stock-kpi-value">
-                                            <input :value="formatDecimal(saldoTotalLotesCalc, 3)" class="ui-field stock-kpi-input" readonly>
-                                            <span class="stock-kpi-suffix">un</span>
+                                            <input :value="formatQuantityDisplay(saldoTotalLotesCalc)" class="ui-field stock-kpi-input" readonly>
+                                            <span class="stock-kpi-suffix">{{ estoqueQuantidadeUnit }}</span>
                                         </div>
                                     </div>
 
@@ -4630,7 +5053,7 @@ onMounted(bootstrap);
 
                                     <div class="stock-kpi-card">
                                         <div class="stock-kpi-head">
-                                            <span class="stock-kpi-label"><DollarSign :size="14" />Ultimo custo</span>
+                                            <span class="stock-kpi-label"><DollarSign :size="14" />Último custo</span>
                                             <span class="calc-chip">CALCULADO</span>
                                         </div>
                                         <div class="stock-kpi-value">
@@ -4663,39 +5086,58 @@ onMounted(bootstrap);
                                 </div>
 
                                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-                                    <label class="stock-mini-field">
+                                    <div class="stock-mini-field">
                                         <span class="stock-mini-label"><Boxes :size="14" />Estoque atual total</span>
                                         <div class="stock-mini-control">
-                                            <input v-model="form.estoque.quantidade" type="number" step="0.000001" class="ui-field stock-mini-input">
-                                            <span class="stock-mini-suffix">un</span>
+                                            <input
+                                                :value="formatQuantityDisplay(estoqueAtualTotalCalc)"
+                                                type="text"
+                                                class="ui-field stock-mini-input stock-mini-input--locked"
+                                                disabled
+                                            >
+                                            <span class="stock-mini-suffix stock-mini-suffix--with-action">{{ estoqueQuantidadeUnit }}</span>
+                                            <button
+                                                type="button"
+                                                class="stock-mini-adjust-button"
+                                                :disabled="!canRequestStockAdjustment"
+                                                title="Solicitar ajuste de estoque"
+                                                aria-label="Solicitar ajuste de estoque"
+                                                @click="goToStockAdjustmentRequest"
+                                            >
+                                                <PencilLine :size="15" />
+                                            </button>
                                         </div>
-                                    </label>
+                                    </div>
                                     <label class="stock-mini-field">
                                         <span class="stock-mini-label"><Filter :size="14" />Quantidade minima</span>
                                         <div class="stock-mini-control">
-                                            <input v-model="form.estoque.quantidade_minima" type="number" step="0.000001" class="ui-field stock-mini-input">
+                                            <input :value="form.estoque.quantidade_minima" type="text" inputmode="decimal" class="ui-field stock-mini-input stock-mini-input--with-suffix" @input="updateQuantityField(form.estoque, 'quantidade_minima', $event.target.value)" @blur="formatQuantityField(form.estoque, 'quantidade_minima')">
+                                            <span class="stock-mini-suffix">{{ estoqueQuantidadeUnit }}</span>
                                         </div>
                                     </label>
                                     <label class="stock-mini-field">
                                         <span class="stock-mini-label"><Filter :size="14" />Quantidade maxima</span>
                                         <div class="stock-mini-control">
-                                            <input v-model="form.estoque.quantidade_maxima" type="number" step="0.000001" class="ui-field stock-mini-input">
+                                            <input :value="form.estoque.quantidade_maxima" type="text" inputmode="decimal" class="ui-field stock-mini-input stock-mini-input--with-suffix" @input="updateQuantityField(form.estoque, 'quantidade_maxima', $event.target.value)" @blur="formatQuantityField(form.estoque, 'quantidade_maxima')">
+                                            <span class="stock-mini-suffix">{{ estoqueQuantidadeUnit }}</span>
                                         </div>
                                     </label>
                                     <label class="stock-mini-field">
                                         <span class="stock-mini-label"><ShieldCheck :size="14" />Quantidade minima vendavel</span>
                                         <div class="stock-mini-control">
-                                            <input v-model="form.estoque.quantidade_minima_vendavel" type="number" step="0.000001" class="ui-field stock-mini-input">
+                                            <input :value="form.estoque.quantidade_minima_vendavel" type="text" inputmode="decimal" class="ui-field stock-mini-input stock-mini-input--with-suffix" @input="updateQuantityField(form.estoque, 'quantidade_minima_vendavel', $event.target.value)" @blur="formatQuantityField(form.estoque, 'quantidade_minima_vendavel')">
+                                            <span class="stock-mini-suffix">{{ estoqueQuantidadeUnit }}</span>
                                         </div>
                                     </label>
                                     <label class="stock-mini-field">
                                         <span class="stock-mini-label"><AlertTriangle :size="14" />Quantidade de alerta</span>
                                         <div class="stock-mini-control">
-                                            <input v-model="form.estoque.quantidade_alerta" type="number" step="0.000001" class="ui-field stock-mini-input">
+                                            <input :value="form.estoque.quantidade_alerta" type="text" inputmode="decimal" class="ui-field stock-mini-input stock-mini-input--with-suffix" @input="updateQuantityField(form.estoque, 'quantidade_alerta', $event.target.value)" @blur="formatQuantityField(form.estoque, 'quantidade_alerta')">
+                                            <span class="stock-mini-suffix">{{ estoqueQuantidadeUnit }}</span>
                                         </div>
                                     </label>
                                     <label class="stock-mini-field">
-                                        <span class="stock-mini-label"><Layers3 :size="14" />Lote padrao</span>
+                                        <span class="stock-mini-label"><Layers3 :size="14" />Lote padrão</span>
                                         <div class="stock-mini-control">
                                             <input v-model="form.estoque.numero_lote" class="ui-field stock-mini-input">
                                         </div>
@@ -4713,27 +5155,36 @@ onMounted(bootstrap);
                                         </div>
                                     </label>
                                     <label class="stock-mini-field">
-                                        <span class="stock-mini-label"><DollarSign :size="14" />Custo ultima compra</span>
+                                        <span class="stock-mini-label"><DollarSign :size="14" />Custo última compra</span>
                                         <div class="stock-mini-control">
                                             <input v-model="form.estoque_detalhado.custo_ultima_compra" type="number" step="0.0001" class="ui-field stock-mini-input">
                                         </div>
                                     </label>
                                     <div class="md:col-span-3">
-                                        <AppCheckbox v-model="form.estoque.reduzir_estoque" label="Reduzir estoque nas saídas" />
+                                        <button
+                                            type="button"
+                                            class="attr-tile attr-tile--stock"
+                                            :class="{ 'is-active': form.estoque.reduzir_estoque }"
+                                            :aria-pressed="form.estoque.reduzir_estoque"
+                                            @click="toggleReduzirEstoque"
+                                        >
+                                            <Boxes :size="16" />
+                                            Reduzir estoque nas saídas
+                                        </button>
                                     </div>
                                 </div>
                             </div>
 
                             <div class="product-card">
-                                <h2>Planejamento de Reposicao</h2>
-                                <p>Formula: ponto_pedido = consumo_medio_diario x (lead_compra + lead_entrega + lead_recebimento) + estoque_seguranca</p>
+                                <h2>Planejamento de Reposição</h2>
+                                <p>Fórmula: ponto_pedido = consumo_médio_diario x (lead_compra + lead_entrega + lead_recebimento) + estoque_segurança</p>
                                 <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
                                     <label class="stock-mini-field">
                                         <span class="stock-mini-label"><ShoppingCart :size="14" />Consumo medio diario</span>
                                         <div class="stock-mini-control">
                                             <span class="stock-mini-leading-icon"><ShoppingCart :size="14" /></span>
-                                            <input v-model="form.estoque_detalhado.consumo_medio_diario" type="number" step="0.0001" class="ui-field stock-mini-input stock-mini-input--with-icon">
-                                            <span class="stock-mini-suffix">un/dia</span>
+                                            <input :value="form.estoque_detalhado.consumo_médio_diario" type="text" inputmode="decimal" class="ui-field stock-mini-input stock-mini-input--with-icon" @input="updateQuantityField(form.estoque_detalhado, 'consumo_médio_diario', $event.target.value)" @blur="formatQuantityField(form.estoque_detalhado, 'consumo_médio_diario')">
+                                            <span class="stock-mini-suffix">{{ estoqueQuantidadeUnit }}/dia</span>
                                         </div>
                                     </label>
                                     <label class="stock-mini-field">
@@ -4764,16 +5215,16 @@ onMounted(bootstrap);
                                         <span class="stock-mini-label"><ShieldCheck :size="14" />Estoque seguranca</span>
                                         <div class="stock-mini-control">
                                             <span class="stock-mini-leading-icon"><ShieldCheck :size="14" /></span>
-                                            <input v-model="form.estoque_detalhado.estoque_seguranca" type="number" step="0.0001" class="ui-field stock-mini-input stock-mini-input--with-icon">
-                                            <span class="stock-mini-suffix">un</span>
+                                            <input :value="form.estoque_detalhado.estoque_segurança" type="text" inputmode="decimal" class="ui-field stock-mini-input stock-mini-input--with-icon" @input="updateQuantityField(form.estoque_detalhado, 'estoque_segurança', $event.target.value)" @blur="formatQuantityField(form.estoque_detalhado, 'estoque_segurança')">
+                                            <span class="stock-mini-suffix">{{ estoqueQuantidadeUnit }}</span>
                                         </div>
                                     </label>
                                     <label class="stock-mini-field">
-                                        <span class="stock-mini-label"><PackageOpen :size="14" />Lote minimo compra</span>
+                                        <span class="stock-mini-label"><PackageOpen :size="14" />Lote mínimo compra</span>
                                         <div class="stock-mini-control">
                                             <span class="stock-mini-leading-icon"><PackageOpen :size="14" /></span>
-                                            <input v-model="form.estoque_detalhado.lote_minimo_compra" type="number" step="0.0001" class="ui-field stock-mini-input stock-mini-input--with-icon">
-                                            <span class="stock-mini-suffix">un</span>
+                                            <input :value="form.estoque_detalhado.lote_minimo_compra" type="text" inputmode="decimal" class="ui-field stock-mini-input stock-mini-input--with-icon" @input="updateQuantityField(form.estoque_detalhado, 'lote_minimo_compra', $event.target.value)" @blur="formatQuantityField(form.estoque_detalhado, 'lote_minimo_compra')">
+                                            <span class="stock-mini-suffix">{{ estoqueQuantidadeUnit }}</span>
                                         </div>
                                     </label>
                                     <label class="stock-mini-field">
@@ -4785,11 +5236,11 @@ onMounted(bootstrap);
                                         </div>
                                     </label>
                                     <label class="stock-mini-field">
-                                        <span class="stock-mini-label"><Network :size="14" />Ponto de pedido <span class="calc-chip">CALCULADO</span></span>
+                                        <span class="stock-mini-label"><Network :size="14" />Ponto de pedido <span class="calc-chip">{{ form.estoque_detalhado.ponto_pedido_override ? 'MANUAL' : 'CALCULADO' }}</span></span>
                                         <div class="stock-mini-control">
                                             <span class="stock-mini-leading-icon"><Network :size="14" /></span>
-                                            <input v-model="form.estoque_detalhado.ponto_pedido" type="number" step="0.0001" class="ui-field stock-mini-input stock-mini-input--with-icon">
-                                            <span class="stock-mini-suffix">un</span>
+                                            <input :value="pontoPedidoInputValue" type="text" inputmode="decimal" class="ui-field stock-mini-input stock-mini-input--with-icon" :disabled="!form.estoque_detalhado.ponto_pedido_override" @input="updateQuantityField(form.estoque_detalhado, 'ponto_pedido', $event.target.value)" @blur="formatQuantityField(form.estoque_detalhado, 'ponto_pedido')">
+                                            <span class="stock-mini-suffix">{{ estoqueQuantidadeUnit }}</span>
                                         </div>
                                     </label>
                                 </div>
@@ -4807,7 +5258,7 @@ onMounted(bootstrap);
                                     </div>
                                 </div>
                                 <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
-                                    <AppSelect v-model="form.estoque_detalhado.nao_fracionado" label="Nao fracionado">
+                                    <AppSelect v-model="form.estoque_detalhado.nao_fracionado" label="Não fracionado">
                                         <option value="nao">Não</option>
                                         <option value="sim">Sim</option>
                                     </AppSelect>
@@ -4815,7 +5266,7 @@ onMounted(bootstrap);
                                         <option value="sim">Sim</option>
                                         <option value="nao">Não</option>
                                     </AppSelect>
-                                    <AppInput v-model="form.estoque_detalhado.vida_util_padrao" label="Vida util padrao" />
+                                    <AppInput v-model="form.estoque_detalhado.vida_util_padrao" label="Vida útil padrão" />
                                     <AppSelect v-model="form.estoque_detalhado.controla_enderecamento" label="Controla endereçamento">
                                         <option value="nao">Não</option>
                                         <option value="sim">Sim</option>
@@ -4867,13 +5318,13 @@ onMounted(bootstrap);
                                 </div>
                                 <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-3">
                                     <AppInput v-model="form.estoque_detalhado.filial" label="Filial" placeholder="Ex: Matriz" />
-                                    <AppInput v-model="form.estoque_detalhado.deposito_armazem" label="Deposito/Armazem" placeholder="Ex: Armazem Central" />
-                                    <AppInput v-model="form.estoque_detalhado.local_estoque" label="Local de estoque" placeholder="Ex: Pulmao A" />
+                                    <AppInput v-model="form.estoque_detalhado.deposito_armazem" label="Depósito/Armazém" placeholder="Ex: Armazém Central" />
+                                    <AppInput v-model="form.estoque_detalhado.local_estoque" label="Local de estoque" placeholder="Ex: Pulmão A" />
                                     <AppInput v-model="form.estoque_detalhado.rua" label="Rua" />
-                                    <AppInput v-model="form.estoque_detalhado.modulo" label="Modulo" />
+                                    <AppInput v-model="form.estoque_detalhado.modulo" label="Módulo" />
                                     <AppInput v-model="form.estoque_detalhado.prateleira" label="Prateleira" />
-                                    <AppInput v-model="form.estoque_detalhado.nivel" label="Nivel" />
-                                    <AppInput v-model="form.estoque_detalhado.posicao" label="Posicao" />
+                                    <AppInput v-model="form.estoque_detalhado.nivel" label="Nível" />
+                                    <AppInput v-model="form.estoque_detalhado.posicao" label="Posição" />
                                 </div>
                             </div>
 
@@ -4896,11 +5347,11 @@ onMounted(bootstrap);
                                             <Search :size="18" class="barcode-search-icon" />
                                         </div>
                                         <div class="barcode-pages-wrap">
-                                            <span>Linhas por pagina</span>
+                                            <span>Linhas por página</span>
                                             <select class="ui-field barcode-page-select">
                                                 <option>10</option>
                                             </select>
-                                            <span>Pagina 1 de 1</span>
+                                            <span>Página 1 de 1</span>
                                             <div class="barcode-nav-btns">
                                                 <button type="button" class="nav-icon-btn"><ChevronsLeft :size="16" /></button>
                                                 <button type="button" class="nav-icon-btn"><ChevronLeft :size="16" /></button>
@@ -4914,9 +5365,9 @@ onMounted(bootstrap);
                                         <thead>
                                             <tr>
                                                 <th>Filial</th>
-                                                <th>Deposito</th>
+                                                <th>Depósito</th>
                                                 <th>Local Estoque</th>
-                                                <th>Endereco</th>
+                                                <th>Endereço</th>
                                                 <th>Lote</th>
                                                 <th>Quantidade</th>
                                             </tr>
@@ -4943,16 +5394,16 @@ onMounted(bootstrap);
 
                         <div v-if="estoqueSubTab === 'codigo_fornecedor'" class="space-y-4">
                             <div class="product-basic-title-wrap">
-                                <h2 class="product-basic-title">Codigo do Fornecedor</h2>
+                                <h2 class="product-basic-title">Código do Fornecedor</h2>
                                 <p class="product-basic-subtitle">Dados de compra, homologação e referência de fornecedor.</p>
                             </div>
                             <div class="product-card">
                                 <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
                                     <AppInput v-model="form.estoque_detalhado.codigo_fornecedor" label="Código do fornecedor" />
                                     <AppInput v-model="form.estoque_detalhado.codigo_barras_fornecedor" label="Código barras fornecedor" />
-                                    <AppInput v-model="form.estoque_detalhado.custo_ultima_compra" label="Custo ultima compra" />
+                                    <AppInput v-model="form.estoque_detalhado.custo_ultima_compra" label="Custo última compra" />
                                     <AppInput v-model="form.estoque_detalhado.lead_time_fornecedor" label="Lead time fornecedor" />
-                                    <AppInput v-model="form.estoque_detalhado.lote_minimo_fornecedor" label="Lote minimo fornecedor" />
+                                    <AppInput v-model="form.estoque_detalhado.lote_minimo_fornecedor" label="Lote mínimo fornecedor" />
                                 </div>
                             </div>
                         </div>
@@ -4975,11 +5426,11 @@ onMounted(bootstrap);
                                             <Search :size="18" class="barcode-search-icon" />
                                         </div>
                                         <div class="barcode-pages-wrap">
-                                            <span>Linhas por pagina</span>
+                                            <span>Linhas por página</span>
                                             <select class="ui-field barcode-page-select">
                                                 <option>10</option>
                                             </select>
-                                            <span>Pagina 1 de 1</span>
+                                            <span>Página 1 de 1</span>
                                             <div class="barcode-nav-btns">
                                                 <button type="button" class="nav-icon-btn"><ChevronsLeft :size="16" /></button>
                                                 <button type="button" class="nav-icon-btn"><ChevronLeft :size="16" /></button>
@@ -5022,7 +5473,7 @@ onMounted(bootstrap);
 
                         <div v-if="estoqueSubTab === 'dimensoes'" class="space-y-4">
                             <div class="product-basic-title-wrap">
-                                <h2 class="product-basic-title">Dimensoes</h2>
+                                <h2 class="product-basic-title">Dimensões</h2>
                                 <p class="product-basic-subtitle">Dimensões físicas e características logísticas.</p>
                             </div>
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -5239,7 +5690,7 @@ onMounted(bootstrap);
                                     </div>
                                     <div class="gerencial-summary-item">
                                         <div class="gerencial-summary-label-wrap">
-                                            <span class="gerencial-summary-label">Preço minimo</span>
+                                            <span class="gerencial-summary-label">Preço mínimo</span>
                                             <span class="calc-chip">CALCULADO</span>
                                         </div>
                                         <div class="gerencial-summary-value">{{ formatCurrency(gerencialPrecoMinimo) }}</div>
@@ -5343,14 +5794,14 @@ onMounted(bootstrap);
                                                 </div>
                                             </label>
                                             <label class="ger-field">
-                                                <span class="ger-field-label"><Clock3 :size="14" />Vigencia inicio</span>
+                                                <span class="ger-field-label"><Clock3 :size="14" />Vigência início</span>
                                                 <div class="ger-field-control">
                                                     <span class="ger-field-leading-icon"><Clock3 :size="14" /></span>
                                                     <input v-model="row.vigencia_inicio" type="date" class="ui-field ger-field-input ger-field-input--with-icon">
                                                 </div>
                                             </label>
                                             <label class="ger-field">
-                                                <span class="ger-field-label"><Clock3 :size="14" />Vigencia fim</span>
+                                                <span class="ger-field-label"><Clock3 :size="14" />Vigência fim</span>
                                                 <div class="ger-field-control">
                                                     <span class="ger-field-leading-icon"><Clock3 :size="14" /></span>
                                                     <input v-model="row.vigencia_fim" type="date" class="ui-field ger-field-input ger-field-input--with-icon">
@@ -5450,7 +5901,7 @@ onMounted(bootstrap);
                                         </div>
                                     </label>
                                     <label class="ger-field">
-                                        <span class="ger-field-label"><DollarSign :size="14" />Custo reposicao</span>
+                                        <span class="ger-field-label"><DollarSign :size="14" />Custo reposição</span>
                                         <div class="ger-field-control">
                                             <span class="ger-field-leading-icon"><DollarSign :size="14" /></span>
                                             <input v-model="form.gerencial_memoria.custo_reposicao" class="ui-field ger-field-input ger-field-input--with-icon">
@@ -5550,8 +6001,8 @@ onMounted(bootstrap);
 
                     <section v-if="activeTab === 'historico'" class="space-y-4">
                         <div class="product-basic-title-wrap">
-                            <h2 class="product-basic-title">Historico</h2>
-                            <p class="product-basic-subtitle">Adicione o historico do produto.</p>
+                            <h2 class="product-basic-title">Histórico</h2>
+                            <p class="product-basic-subtitle">Adicione o histórico do produto.</p>
                         </div>
 
                         <div class="product-card">
@@ -5659,6 +6110,84 @@ onMounted(bootstrap);
                 </template>
             </section>
         </section>
+
+        <AppModal
+            :open="stockReductionConfirmModal.open"
+            :title="stockReductionConfirmTitle"
+            width-class="max-w-md"
+            @close="closeStockReductionConfirmModal"
+        >
+            <div class="stock-reduction-confirm">
+                <div class="stock-reduction-confirm__icon">
+                    <Boxes :size="20" />
+                </div>
+                <div>
+                    <p>{{ stockReductionConfirmDescription }}</p>
+                    <small>Essa alteração será aplicada ao salvar o cadastro do produto.</small>
+                </div>
+            </div>
+
+            <div class="barcode-modal-actions">
+                <AppButton variant="ghost" @click="closeStockReductionConfirmModal">
+                    Cancelar
+                </AppButton>
+                <AppButton
+                    :variant="stockReductionConfirmModal.nextValue ? 'primary' : 'danger'"
+                    @click="confirmStockReductionChange"
+                >
+                    {{ stockReductionConfirmButtonLabel }}
+                </AppButton>
+            </div>
+        </AppModal>
+
+        <AppModal
+            :open="ncmLookupModalOpen"
+            title="Buscar NCM"
+            width-class="max-w-4xl"
+            @close="closeNcmLookupModal"
+        >
+            <div class="ncm-lookup-shell">
+                <div class="field-with-icon">
+                    <input
+                        v-model="ncmLookupSearch"
+                        class="ui-field"
+                        placeholder="Pesquisar por NCM, descricao ou perfil fiscal"
+                        autofocus
+                    >
+                    <Search :size="18" class="barcode-search-icon" />
+                </div>
+
+                <div class="ncm-lookup-list">
+                    <div v-if="ncmLookupLoading" class="ncm-lookup-empty">
+                        Consultando NCMs no NotaAgil...
+                    </div>
+
+                    <div v-else-if="ncmLookupError" class="ncm-lookup-empty ncm-lookup-empty--danger">
+                        {{ ncmLookupError }}
+                    </div>
+
+                    <template v-else>
+                        <button
+                            v-for="row in ncmLookupRows"
+                            :key="`ncm-${row.id}`"
+                            type="button"
+                            class="ncm-lookup-row"
+                            @click="selectNcmLookupRow(row)"
+                        >
+                            <span class="ncm-lookup-code">{{ row.ncm }}</span>
+                            <span class="ncm-lookup-main">
+                                <strong>{{ row.ncm_descricao || row.display_name || 'NCM sem descricao' }}</strong>
+                                <small>{{ row.display_name }}<template v-if="row.cest"> · CEST {{ row.cest }}</template></small>
+                            </span>
+                        </button>
+                    </template>
+
+                    <div v-if="!ncmLookupLoading && !ncmLookupError && ncmLookupRows.length === 0" class="ncm-lookup-empty">
+                        {{ String(ncmLookupSearch || '').trim() === '' ? 'Digite um termo para consultar NCMs no NotaAgil.' : 'Nenhum NCM encontrado no NotaAgil.' }}
+                    </div>
+                </div>
+            </div>
+        </AppModal>
 
         <AppModal
             :open="parameterQuickModalOpen"
@@ -5999,6 +6528,68 @@ onMounted(bootstrap);
     min-width: 0;
 }
 
+.ncm-lookup-shell {
+    display: grid;
+    gap: 1rem;
+}
+
+.ncm-lookup-list {
+    display: grid;
+    gap: 0.55rem;
+    max-height: min(28rem, 58vh);
+    overflow: auto;
+}
+
+.ncm-lookup-row {
+    width: 100%;
+    border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+    border-radius: 0.6rem;
+    padding: 0.75rem;
+    display: grid;
+    grid-template-columns: minmax(7rem, 0.35fr) minmax(0, 1fr);
+    gap: 0.85rem;
+    text-align: left;
+    background: color-mix(in srgb, var(--color-bg-surface) 94%, #0f151f);
+}
+
+.ncm-lookup-row:hover {
+    border-color: color-mix(in srgb, var(--color-primary) 58%, var(--color-border));
+    background: color-mix(in srgb, var(--color-primary) 9%, var(--color-bg-surface));
+}
+
+.ncm-lookup-code {
+    font-weight: 800;
+    color: var(--color-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.ncm-lookup-main {
+    display: grid;
+    gap: 0.2rem;
+    min-width: 0;
+}
+
+.ncm-lookup-main strong,
+.ncm-lookup-main small {
+    overflow-wrap: anywhere;
+}
+
+.ncm-lookup-main small,
+.ncm-lookup-empty {
+    color: var(--color-text-muted);
+    font-size: 0.84rem;
+}
+
+.ncm-lookup-empty {
+    padding: 1.5rem;
+    text-align: center;
+}
+
+.ncm-lookup-empty--danger {
+    color: var(--color-danger);
+    font-weight: 700;
+}
+
 .parameter-quick-modal-error {
     margin: 0.85rem 0 0;
     color: var(--color-danger);
@@ -6122,15 +6713,17 @@ onMounted(bootstrap);
 }
 
 .barcode-search-wrap .ui-field {
-    padding-right: 2.2rem;
+    padding-right: 2.65rem;
 }
 
 .barcode-search-icon {
     position: absolute;
     right: 0.65rem;
     top: 50%;
+    z-index: 1;
     transform: translateY(-50%);
     color: var(--color-text-muted);
+    pointer-events: none;
 }
 
 .barcode-pages-wrap {
@@ -6234,8 +6827,8 @@ onMounted(bootstrap);
 }
 
 .composition-grid-drag-ghost.has-target {
-    border-color: color-mix(in srgb, #22c55e 70%, var(--color-border));
-    color: #15803d;
+    border-color: color-mix(in srgb, var(--color-primary) 70%, var(--color-border));
+    color: var(--color-primary);
 }
 
 .composition-current-row td {
@@ -6297,8 +6890,8 @@ onMounted(bootstrap);
 .composition-connected-row.is-grid-link-target td,
 .composition-current-row.is-grid-link-target:hover td,
 .composition-connected-row.is-grid-link-target:hover td {
-    background: color-mix(in srgb, #22c55e 13%, var(--color-bg-surface));
-    box-shadow: inset 0 0 0 2px color-mix(in srgb, #22c55e 55%, transparent);
+    background: color-mix(in srgb, var(--color-primary) 13%, var(--color-bg-surface));
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-primary) 55%, transparent);
     cursor: crosshair;
 }
 
@@ -7240,6 +7833,42 @@ onMounted(bootstrap);
     gap: 0.55rem;
 }
 
+.stock-reduction-confirm {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.8rem;
+    border: 1px solid color-mix(in srgb, #facc15 46%, var(--color-border));
+    border-radius: 0.78rem;
+    background: color-mix(in srgb, #facc15 10%, var(--color-bg-elevated));
+    padding: 0.9rem;
+}
+
+.stock-reduction-confirm__icon {
+    width: 2.2rem;
+    height: 2.2rem;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    color: #facc15;
+    background: color-mix(in srgb, #facc15 16%, transparent);
+}
+
+.stock-reduction-confirm p {
+    margin: 0;
+    color: var(--color-text);
+    font-weight: 750;
+    line-height: 1.45;
+}
+
+.stock-reduction-confirm small {
+    display: block;
+    margin-top: 0.35rem;
+    color: var(--color-text-muted);
+    line-height: 1.35;
+}
+
 .composition-modal-product-grid :deep(.ui-field) {
     min-height: 2.55rem;
     height: 2.55rem;
@@ -7516,6 +8145,19 @@ onMounted(bootstrap);
     padding-right: 3.25rem;
 }
 
+.stock-mini-input--with-suffix {
+    padding-right: 3.25rem;
+}
+
+.stock-mini-input--locked {
+    border-color: color-mix(in srgb, var(--color-primary) 34%, var(--color-border));
+    background: color-mix(in srgb, var(--color-primary) 9%, var(--color-bg-surface));
+    color: var(--color-text);
+    opacity: 1;
+    cursor: not-allowed;
+    padding-right: 5.8rem;
+}
+
 .stock-mini-suffix {
     position: absolute;
     top: 50%;
@@ -7524,6 +8166,38 @@ onMounted(bootstrap);
     color: var(--color-text-muted);
     font-size: 0.8rem;
     font-weight: 700;
+}
+
+.stock-mini-suffix--with-action {
+    right: 3.05rem;
+}
+
+.stock-mini-adjust-button {
+    position: absolute;
+    top: 50%;
+    right: 0.45rem;
+    width: 2rem;
+    height: 2rem;
+    transform: translateY(-50%);
+    border: 1px solid color-mix(in srgb, var(--color-primary) 44%, var(--color-border));
+    border-radius: 0.5rem;
+    background: var(--color-primary);
+    color: var(--color-text-inverse);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+}
+
+.stock-mini-adjust-button:hover:not(:disabled) {
+    transform: translateY(-50%) scale(1.03);
+    box-shadow: 0 8px 18px color-mix(in srgb, var(--color-primary) 22%, transparent);
+}
+
+.stock-mini-adjust-button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
 }
 
 @media (max-width: 640px) {
@@ -7645,9 +8319,38 @@ onMounted(bootstrap);
     background: color-mix(in srgb, var(--color-primary) 18%, var(--color-bg-surface));
 }
 
+.attr-tile--stock {
+    width: 100%;
+    color: color-mix(in srgb, var(--color-text-muted) 88%, var(--color-text));
+    border-color: color-mix(in srgb, var(--color-border) 88%, transparent);
+    background: color-mix(in srgb, var(--color-bg-surface) 94%, var(--color-text-muted));
+}
+
+.attr-tile--stock:hover {
+    color: var(--color-text);
+    border-color: color-mix(in srgb, var(--color-text-muted) 42%, var(--color-border));
+    background: color-mix(in srgb, var(--color-text-muted) 10%, var(--color-bg-surface));
+}
+
+.attr-tile--stock.is-active {
+    color: #fde047;
+    border-color: color-mix(in srgb, #facc15 88%, transparent);
+    background: color-mix(in srgb, #facc15 22%, var(--color-bg-surface));
+}
+
+.attr-tile--stock.is-active:hover {
+    color: #fde68a;
+    border-color: color-mix(in srgb, #facc15 92%, transparent);
+    background: color-mix(in srgb, #facc15 28%, var(--color-bg-surface));
+}
+
 .attr-tile:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--color-primary) 55%, transparent);
     outline-offset: 1px;
+}
+
+.attr-tile--stock:focus-visible {
+    outline-color: color-mix(in srgb, #facc15 70%, transparent);
 }
 
 .chips-list {
@@ -7881,7 +8584,7 @@ onMounted(bootstrap);
 }
 
 .ger-field-input--with-icon {
-    padding-left: 2.02rem;
+    padding-left: 2.45rem;
 }
 
 .ger-field-input--with-suffix {

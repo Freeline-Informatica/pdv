@@ -30,11 +30,11 @@ const canAccess = computed(() => isRestaurantTerminal.value && hasModeAccess.val
 
 const blockedMessage = computed(() => {
     if (!isRestaurantTerminal.value) {
-        return 'Este recurso esta disponivel somente para terminais configurados como PDV Restaurante.';
+        return 'Este recurso está disponível somente para terminais configurados como PDV Restaurante.';
     }
 
     const currentMode = getRestaurantModeLabel(restaurantMode.value);
-    return `Este recurso nao esta habilitado para o modo atual (${currentMode}).`; 
+    return `Este recurso não está habilitado para o modo atual (${currentMode}).`;
 });
 
 function goToTerminalSelection() {
@@ -46,7 +46,7 @@ function goToMainPdv() {
 }
 
 function goToSettings() {
-    router.push('/configuracoes');
+    router.push('/configurações');
 }
 </script>
 
@@ -61,7 +61,7 @@ function goToSettings() {
             <h1 class="restaurant-guard__title">Modo Restaurante necessario</h1>
             <p class="restaurant-guard__text">{{ blockedMessage }}</p>
             <p class="restaurant-guard__meta">
-                Terminal atual: <strong>{{ terminal?.label || 'Nao identificado' }}</strong>
+                Terminal atual: <strong>{{ terminal?.label || 'Não identificado' }}</strong>
                 <span v-if="terminal?.code">({{ terminal.code }})</span>
             </p>
             <p class="restaurant-guard__meta">
@@ -69,7 +69,7 @@ function goToSettings() {
             </p>
             <div class="restaurant-guard__actions">
                 <AppButton @click="goToTerminalSelection">Trocar terminal</AppButton>
-                <AppButton v-if="isAdminUser" variant="ghost" @click="goToSettings">Voltar para configuracoes</AppButton>
+                <AppButton v-if="isAdminUser" variant="ghost" @click="goToSettings">Voltar para configurações</AppButton>
                 <AppButton variant="secondary" @click="goToMainPdv">Voltar ao PDV</AppButton>
             </div>
         </AppCard>

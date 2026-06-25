@@ -24,6 +24,7 @@ class Sale extends Model
         'status',
         'document_type',
         'cliente_nome',
+        'customer_snapshot',
         'total_bruto',
         'total_financeiro',
         'juros_total',
@@ -38,6 +39,7 @@ class Sale extends Model
         'total_bruto' => 'decimal:2',
         'total_financeiro' => 'decimal:2',
         'juros_total' => 'decimal:2',
+        'customer_snapshot' => 'array',
         'sold_at' => 'datetime',
         'canceled_at' => 'datetime',
     ];
@@ -54,7 +56,7 @@ class Sale extends Model
 
     public function fiscalDocument(): HasOne
     {
-        return $this->hasOne(SaleFiscalDocument::class, 'sale_id')->latestOfMany();
+        return $this->hasOne(SaleFiscalDocument::class, 'sale_id')->latest('created_at');
     }
 
     public function creator(): BelongsTo

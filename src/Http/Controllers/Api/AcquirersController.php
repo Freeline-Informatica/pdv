@@ -110,9 +110,8 @@ class AcquirersController extends Controller
             'taxa_operadora' => ['nullable', 'numeric'],
             'recebe_em' => ['nullable', 'integer', 'min:1'],
             'parc_inicial' => ['required', 'integer', 'min:1'],
-            'parc_final' => ['required', 'integer', 'min:1'],
-            'parc_sugerida' => ['nullable', 'integer', 'min:1'],
-            'parc_maximo' => ['nullable', 'integer', 'min:1'],
+            'parc_final' => ['required', 'integer', 'gte:parc_inicial'],
+            'parc_sugerida' => ['nullable', 'integer', 'gte:parc_inicial', 'lte:parc_final'],
             'ativo' => ['required', 'boolean'],
         ]);
 
@@ -128,9 +127,8 @@ class AcquirersController extends Controller
             'taxa_operadora' => ['nullable', 'numeric'],
             'recebe_em' => ['nullable', 'integer', 'min:1'],
             'parc_inicial' => ['required', 'integer', 'min:1'],
-            'parc_final' => ['required', 'integer', 'min:1'],
-            'parc_sugerida' => ['nullable', 'integer', 'min:1'],
-            'parc_maximo' => ['nullable', 'integer', 'min:1'],
+            'parc_final' => ['required', 'integer', 'gte:parc_inicial'],
+            'parc_sugerida' => ['nullable', 'integer', 'gte:parc_inicial', 'lte:parc_final'],
             'ativo' => ['required', 'boolean'],
         ]);
 

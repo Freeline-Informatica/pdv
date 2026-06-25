@@ -3,8 +3,9 @@ import { AlertTriangle, LogOut, Monitor, RefreshCcw } from 'lucide-vue-next';
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import api from '../lib/api';
-import { clearAuthData, exitIntegratedPdv, getTerminalSession, getUser, resolvePdvExitLabel, setTerminalSession } from '../lib/auth';
+import { clearAuthData, getTerminalSession, getUser, setTerminalSession } from '../lib/auth';
 import { resolveTerminalLandingPath } from '../lib/terminalRouting';
+import { normalizeTerminalDeviceAccess } from '../lib/deviceAccess';
 import AppCard from '../components/ui/AppCard.vue';
 import AppButton from '../components/ui/AppButton.vue';
 import AppThemeToggle from '../components/layout/AppThemeToggle.vue';
@@ -56,6 +57,7 @@ function mapTerminals(items, user) {
             code: String(item.identificador),
             layoutMode,
             restaurantMode: normalizeRestaurantMode(layoutMode, item.pdv_restaurant_mode),
+            deviceAccess: normalizeTerminalDeviceAccess(item),
             isOwn,
             status: isOwn ? 'mine' : 'free',
             hasOpenCash: isOwn && isPersisted,
@@ -73,7 +75,6 @@ const selectedTerminalId = ref(
 
 const selectedTerminal = computed(() => terminals.value.find((item) => item.id === selectedTerminalId.value) || null);
 const openCashTerminal = computed(() => terminals.value.find((item) => item.isOwn && item.hasOpenCash) || null);
-const exitLabel = computed(() => resolvePdvExitLabel());
 
 const canContinueSelected = computed(() => {
     if (!selectedTerminal.value) return false;
@@ -137,6 +138,7 @@ async function continueWithTerminal(terminal) {
             code: terminal.code,
             layoutMode: terminal.layoutMode,
             restaurantMode: terminal.restaurantMode,
+            deviceAccess: normalizeTerminalDeviceAccess(terminal.deviceAccess),
             isOwn: terminal.isOwn,
         });
 
@@ -163,8 +165,6 @@ async function refreshTerminals() {
 }
 
 async function exitSession() {
-    if (exitIntegratedPdv()) return;
-
     clearAuthData();
     await router.push('/login');
 }
@@ -239,7 +239,7 @@ onMounted(loadTerminals);
 
                 <AppButton variant="ghost" block @click="exitSession">
                     <LogOut class="h-4 w-4" />
-                    {{ exitLabel }}
+                    Sair
                 </AppButton>
             </div>
         </AppCard>

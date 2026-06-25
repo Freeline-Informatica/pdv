@@ -74,7 +74,10 @@ class Produto extends Model
 
     public function precos(): HasMany
     {
-        return $this->hasMany(ProdutoPreco::class, 'produto_id')->orderByDesc('ativo')->orderBy('tipo');
+        return $this->hasMany(ProdutoPreco::class, 'produto_id')
+            ->orderByDesc('ativo')
+            ->orderByRaw('CASE WHEN valor > 0 THEN 0 ELSE 1 END')
+            ->orderBy('tipo');
     }
 
     public function codigosBarras(): HasMany

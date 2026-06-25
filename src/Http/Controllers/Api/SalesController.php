@@ -21,6 +21,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Throwable;
 
 class SalesController extends Controller
@@ -184,11 +185,46 @@ class SalesController extends Controller
     {
         $payload = $request->validate([
             'customer' => ['nullable', 'array'],
+            'customer.id' => ['nullable', 'string', 'max:80'],
             'customer.nome' => ['nullable', 'string', 'max:255'],
+            'customer.name' => ['nullable', 'string', 'max:255'],
+            'customer.cpf_cnpj' => ['nullable', 'string', 'max:30'],
+            'customer.cpfCnpj' => ['nullable', 'string', 'max:30'],
+            'customer.documento' => ['nullable', 'string', 'max:30'],
+            'customer.document' => ['nullable', 'string', 'max:30'],
+            'customer.cpf' => ['nullable', 'string', 'max:30'],
+            'customer.cnpj' => ['nullable', 'string', 'max:30'],
+            'customer.telefone' => ['nullable', 'string', 'max:30'],
+            'customer.phone' => ['nullable', 'string', 'max:30'],
+            'customer.email' => ['nullable', 'email', 'max:255'],
+            'customer.tipo_pessoa' => ['nullable', 'string', 'max:30'],
+            'customer.personType' => ['nullable', 'string', 'max:30'],
+            'customer.cep' => ['nullable', 'string', 'max:20'],
+            'customer.logradouro' => ['nullable', 'string', 'max:255'],
+            'customer.street' => ['nullable', 'string', 'max:255'],
+            'customer.numero' => ['nullable', 'string', 'max:30'],
+            'customer.number' => ['nullable', 'string', 'max:30'],
+            'customer.bairro' => ['nullable', 'string', 'max:120'],
+            'customer.neighborhood' => ['nullable', 'string', 'max:120'],
+            'customer.complemento' => ['nullable', 'string', 'max:120'],
+            'customer.complement' => ['nullable', 'string', 'max:120'],
+            'customer.cidade' => ['nullable', 'string', 'max:120'],
+            'customer.city' => ['nullable', 'string', 'max:120'],
+            'customer.uf' => ['nullable', 'string', 'max:2'],
+            'customer.state' => ['nullable', 'string', 'max:2'],
+            'customer.codigo_ibge' => ['nullable', 'string', 'max:20'],
+            'customer.inscricao_estadual' => ['nullable', 'string', 'max:30'],
+            'customer.stateRegistration' => ['nullable', 'string', 'max:30'],
+            'customer.indicador_ie' => ['nullable', 'string', 'max:2'],
+            'customer.pais' => ['nullable', 'string', 'max:80'],
+            'customer.country' => ['nullable', 'string', 'max:80'],
+            'customer.country_code' => ['nullable', 'string', 'max:10'],
             'items' => ['required', 'array', 'min:1'],
             'items.*.id' => ['nullable'],
             'items.*.nome' => ['required', 'string', 'max:255'],
             'items.*.codigo' => ['nullable', 'string', 'max:255'],
+            'items.*.codigo_barras' => ['nullable', 'string', 'max:255'],
+            'items.*.unidade' => ['nullable', 'string', 'max:20'],
             'items.*.quantidade' => ['required', 'numeric', 'gt:0'],
             'items.*.valor_unitario' => ['required', 'numeric', 'gte:0'],
             'payments' => ['required', 'array', 'min:1'],
@@ -199,6 +235,8 @@ class SalesController extends Controller
             'complementary' => ['nullable', 'array'],
             'complementary.document_model' => ['nullable', 'string', 'max:20'],
             'complementary.document_series' => ['nullable', 'string', 'max:20'],
+            'complementary.fiscal_observation' => ['nullable', 'string', 'max:500'],
+            'complementary.observacao_nota' => ['nullable', 'string', 'max:500'],
             'complementary.restaurant_ficha_id' => ['nullable', 'string', 'max:80'],
             'complementary.restaurant_table_id' => ['nullable', 'string', 'max:80'],
             'complementary.restaurant_ficha_code' => ['nullable', 'string', 'max:80'],
@@ -209,9 +247,8 @@ class SalesController extends Controller
         $operatorId = $request->user()?->id;
         $now = now();
         $scope = $this->currentScope();
-        $previewTechnicalError = null;
 
-        $result = DB::transaction(function () use ($payload, $operatorId, $now, $scope, &$previewTechnicalError): array {
+        $result = DB::transaction(function () use ($payload, $operatorId, $now, $scope): array {
             $documentType = $this->normalizeDocumentType(
                 (string) data_get($payload, 'complementary.document_model', 'NFC-e'),
             );
@@ -227,7 +264,7 @@ class SalesController extends Controller
 
             if (($fiscalConfig?->notagil_enabled ?? false) && ! $this->notaAgil->isEnabled($fiscalConfig)) {
                 throw ValidationException::withMessages([
-                    'fiscal' => ['Configure NOTAGIL_TOKEN para emitir documentos pelo NotaAgilApi.'],
+                    'fiscal' => ['Configure o token NotaAgil nas configurações fiscais para emitir documentos pelo NotaAgilApi.'],
                 ]);
             }
 
@@ -235,20 +272,15 @@ class SalesController extends Controller
             $operationCode = null;
             if ($notaAgilEnabled && $fiscalConfig) {
                 try {
+                    $this->notaAgil->requireCompanyId($fiscalConfig);
                     $operationCode = $this->notaAgil->operationCode($fiscalConfig, $documentType);
-                    $this->notaAgil->previewCheckout($payload, $fiscalConfig, $documentType, $saleSeries, $saleNumber, $now, $operatorId);
+                    if (! $operationCode) {
+                        throw new NotaAgilConfigurationException('Configure o código de operação NotaAgil para '.strtoupper($documentType).'.');
+                    }
                 } catch (NotaAgilConfigurationException $error) {
                     throw ValidationException::withMessages([
                         'fiscal' => [$error->getMessage()],
                     ]);
-                } catch (Throwable $error) {
-                    if ($this->notaAgil->isFiscalValidationError($error)) {
-                        throw ValidationException::withMessages([
-                            'fiscal' => [$this->notaAgil->exceptionMessage($error)],
-                        ]);
-                    }
-
-                    $previewTechnicalError = $error;
                 }
             }
 
@@ -279,13 +311,21 @@ class SalesController extends Controller
                 ]);
             }
 
+            $customerSnapshot = $this->normalizeCustomerSnapshot($payload['customer'] ?? null);
+            if ($documentType === 'nfe' && ! $this->hasIdentifiedCustomer($customerSnapshot)) {
+                throw ValidationException::withMessages([
+                    'customer' => ['Selecione um cliente com CPF/CNPJ para emitir NF-e.'],
+                ]);
+            }
+
             $sale = Sale::query()->create([
                 'grupo_empresarial_id' => $scope['grupo_id'],
                 'estabelecimento_id' => $scope['estabelecimento_id'],
                 'numero' => $saleNumber,
                 'status' => Sale::STATUS_FINALIZED,
                 'document_type' => $documentType,
-                'cliente_nome' => trim((string) data_get($payload, 'customer.nome', '')) ?: null,
+                'cliente_nome' => trim((string) data_get($customerSnapshot, 'nome', '')) ?: null,
+                'customer_snapshot' => $customerSnapshot ?: null,
                 'total_bruto' => $productsTotal,
                 'total_financeiro' => $totalFinanceiro,
                 'juros_total' => $interestTotal,
@@ -301,8 +341,9 @@ class SalesController extends Controller
                 $productId = null;
                 $catalogProductId = null;
                 $productName = trim((string) ($item['nome'] ?? 'Produto'));
-                $productCode = trim((string) ($item['codigo'] ?? '')) ?: null;
-                $unit = 'UN';
+                $productCode = trim((string) ($item['codigo_barras'] ?? ''))
+                    ?: (trim((string) ($item['codigo'] ?? '')) ?: null);
+                $unit = $this->normalizeSaleItemUnit($item['unidade'] ?? $item['unit'] ?? null);
 
                 $incomingProductId = $item['id'] ?? null;
                 $catalogProduct = $incomingProductId ? $this->products->find($incomingProductId) : null;
@@ -315,8 +356,12 @@ class SalesController extends Controller
                     }
 
                     $productName = $productName ?: (string) ($catalogProduct['nome'] ?? 'Produto');
-                    $productCode = $productCode ?: ($catalogProduct['codigo'] ?? null);
-                    $unit = strtoupper((string) ($catalogProduct['unidade'] ?? 'UN'));
+                    $productCode = $productCode ?: ($catalogProduct['codigo_barras'] ?? $catalogProduct['ean'] ?? $catalogProduct['gtin'] ?? $catalogProduct['codigo'] ?? null);
+                    $unit = $this->normalizeSaleItemUnit(
+                        data_get($catalogProduct, 'tributacao.unidade_tributavel')
+                            ?: ($catalogProduct['unidade'] ?? null)
+                            ?: $unit,
+                    );
 
                     $this->stockMovements->decrease($catalogProduct['id'], $quantity, [
                         'origem' => 'pdv_venda',
@@ -371,12 +416,14 @@ class SalesController extends Controller
 
             $fiscalDocument = null;
             if ($notaAgilEnabled && $fiscalConfig && $operationCode) {
-                $fiscalDocument = $this->notaAgil->makeFiscalDocument($sale, $fiscalConfig, $saleSeries, $operationCode);
-                $fiscalDocument->save();
-
-                if ($previewTechnicalError) {
-                    $this->notaAgil->markContingency($fiscalDocument, $previewTechnicalError);
+                try {
+                    $fiscalDocument = $this->notaAgil->makeFiscalDocument($sale, $fiscalConfig, $saleSeries, $operationCode);
+                } catch (NotaAgilConfigurationException $error) {
+                    throw ValidationException::withMessages([
+                        'fiscal' => [$error->getMessage()],
+                    ]);
                 }
+                $fiscalDocument->save();
             }
 
             return [
@@ -391,9 +438,9 @@ class SalesController extends Controller
         $series = (string) ($result['series'] ?? '1');
         $fiscalDocument = $result['fiscal_document'] ?? null;
 
-        if ($fiscalDocument instanceof SaleFiscalDocument && ! $previewTechnicalError) {
+        if ($fiscalDocument instanceof SaleFiscalDocument) {
             try {
-                $fiscalDocument = $this->notaAgil->submitAndWait($fiscalDocument, FiscalConfig::query()->first());
+                $fiscalDocument = $this->notaAgil->submit($fiscalDocument, FiscalConfig::query()->first());
             } catch (Throwable $error) {
                 $fiscalDocument = $this->notaAgil->isFiscalValidationError($error)
                     ? $this->notaAgil->markRejected($fiscalDocument, $error)
@@ -426,9 +473,11 @@ class SalesController extends Controller
         }
 
         if ($document->status === SaleFiscalDocument::STATUS_AUTHORIZED) {
+            $document = $this->notaAgil->syncArtifacts($document, FiscalConfig::query()->first());
+
             return response()->json([
                 'message' => 'Documento fiscal já autorizado.',
-                'fiscal' => $this->presentFiscalDocument($document),
+                'fiscal' => $this->presentFiscalDocument($document, true),
             ]);
         }
 
@@ -442,7 +491,7 @@ class SalesController extends Controller
 
         return response()->json([
             'message' => $this->resolveEmissionStatusLabel($document),
-            'fiscal' => $this->presentFiscalDocument($document),
+            'fiscal' => $this->presentFiscalDocument($document, true),
         ]);
     }
 
@@ -458,8 +507,20 @@ class SalesController extends Controller
             ]);
         }
 
+        if ($document->status === SaleFiscalDocument::STATUS_AUTHORIZED) {
+            $document = $this->notaAgil->syncArtifacts($document, FiscalConfig::query()->first());
+
+            return response()->json([
+                'message' => 'Documento fiscal já autorizado.',
+                'fiscal' => $this->presentFiscalDocument($document, true),
+            ]);
+        }
+
         try {
             $document = $this->notaAgil->sync($document, FiscalConfig::query()->first());
+            if ($document->status === SaleFiscalDocument::STATUS_AUTHORIZED) {
+                $document = $this->notaAgil->syncArtifacts($document, FiscalConfig::query()->first());
+            }
         } catch (Throwable $error) {
             if ($this->notaAgil->isFiscalValidationError($error)) {
                 $document = $this->notaAgil->markRejected($document, $error);
@@ -472,7 +533,64 @@ class SalesController extends Controller
 
         return response()->json([
             'message' => $this->resolveEmissionStatusLabel($document),
-            'fiscal' => $this->presentFiscalDocument($document),
+            'fiscal' => $this->presentFiscalDocument($document, true),
+        ]);
+    }
+
+    public function fiscalEvents(Sale $sale): StreamedResponse|JsonResponse
+    {
+        $this->ensureSaleBelongsToCurrentScope($sale);
+        $sale->loadMissing('fiscalDocument');
+        $document = $sale->fiscalDocument;
+
+        if (! $document) {
+            throw ValidationException::withMessages([
+                'fiscal' => ['Esta venda não possui documento fiscal vinculado.'],
+            ]);
+        }
+
+        return response()->stream(function () use ($document): void {
+            @set_time_limit(0);
+
+            $deadline = time() + 60;
+            $lastVersion = null;
+            $lastHeartbeatAt = 0;
+
+            while (time() <= $deadline && ! connection_aborted()) {
+                $fresh = $document->fresh();
+                if (! $fresh) {
+                    $this->emitSseEvent('fiscal.updated', [
+                        'message' => 'Documento fiscal não encontrado.',
+                        'fiscal' => null,
+                    ]);
+                    break;
+                }
+
+                $version = $this->fiscalDocumentStreamVersion($fresh);
+                if ($version !== $lastVersion) {
+                    $lastVersion = $version;
+                    $this->emitSseEvent('fiscal.updated', [
+                        'message' => $this->resolveEmissionStatusLabel($fresh),
+                        'fiscal' => $this->presentFiscalDocument($fresh, true, false),
+                    ]);
+
+                    if ($this->isFiscalStreamTerminal($fresh)) {
+                        break;
+                    }
+                } elseif (time() - $lastHeartbeatAt >= 10) {
+                    $lastHeartbeatAt = time();
+                    $this->emitSseEvent('heartbeat', [
+                        'ts' => now()->toIso8601String(),
+                    ]);
+                }
+
+                usleep(500 * 1000);
+            }
+        }, 200, [
+            'Content-Type' => 'text/event-stream',
+            'Cache-Control' => 'no-cache, no-transform',
+            'X-Accel-Buffering' => 'no',
+            'Connection' => 'keep-alive',
         ]);
     }
 
@@ -493,13 +611,42 @@ class SalesController extends Controller
         }
 
         $payload = $this->notaAgil->download($document, $artifact, FiscalConfig::query()->first());
-        $content = (string) (data_get($payload, 'content') ?: data_get($payload, 'base64') ?: data_get($payload, 'raw') ?: '');
-        $binary = (bool) data_get($payload, 'base64', false) ? base64_decode($content) : $content;
+        $binary = $this->resolveFiscalArtifactBinary($payload, $artifact);
 
         return response($binary, 200, [
             'Content-Type' => $artifact === 'xml' ? 'application/xml' : 'application/pdf',
             'Content-Disposition' => sprintf('attachment; filename="sale-%s.%s"', $sale->numero, $artifact),
         ]);
+    }
+
+    private function resolveFiscalArtifactBinary(array $payload, string $artifact): string
+    {
+        $base64 = data_get($payload, 'base64');
+        if ($artifact === 'pdf' && is_string($base64) && trim($base64) !== '') {
+            $normalized = preg_replace('/^data:application\/pdf;base64,/', '', trim($base64));
+            $decoded = base64_decode($normalized, true);
+            if ($decoded !== false) {
+                return $decoded;
+            }
+        }
+
+        $content = data_get($payload, 'content');
+        if (is_string($content) && $content !== '') {
+            return $content;
+        }
+
+        $raw = data_get($payload, 'raw');
+        if (is_string($raw) && $raw !== '') {
+            return $raw;
+        }
+
+        if (is_string($base64) && trim($base64) !== '') {
+            $decoded = base64_decode(preg_replace('/\s+/', '', trim($base64)), true);
+
+            return $decoded === false ? $base64 : $decoded;
+        }
+
+        return '';
     }
 
     private function markRestaurantFichaAsPaid(array $payload, Carbon $now): void
@@ -518,7 +665,11 @@ class SalesController extends Controller
         }
 
         $expectedTableId = trim((string) data_get($payload, 'complementary.restaurant_table_id', ''));
-        if ($expectedTableId !== '' && (string) $ficha->table_id !== $expectedTableId) {
+        $tableId = trim((string) ($ficha->table_id ?? ''));
+        $isTablelessGroup = $tableId === ''
+            && in_array($expectedTableId, ['__without_table__', 'without-table:'.$ficha->id], true);
+
+        if ($expectedTableId !== '' && ! $isTablelessGroup && $tableId !== $expectedTableId) {
             throw ValidationException::withMessages([
                 'complementary.restaurant_table_id' => ['A ficha informada não corresponde à mesa selecionada.'],
             ]);
@@ -538,6 +689,65 @@ class SalesController extends Controller
         $normalized = mb_strtolower(preg_replace('/[^a-z]/', '', $documentModel));
         if ($normalized === 'nfe') return 'nfe';
         return 'nfce';
+    }
+
+    private function normalizeCustomerSnapshot(mixed $customer): array
+    {
+        if (! is_array($customer)) {
+            return [];
+        }
+
+        $document = preg_replace('/\D+/', '', (string) $this->firstFilled([
+            data_get($customer, 'cpf_cnpj'),
+            data_get($customer, 'cpfCnpj'),
+            data_get($customer, 'documento'),
+            data_get($customer, 'document'),
+            data_get($customer, 'cnpj'),
+            data_get($customer, 'cpf'),
+        ]));
+        $name = trim((string) data_get($customer, 'nome', data_get($customer, 'name', '')));
+
+        if ($document === '' && ($name === '' || mb_strtolower($name) === 'consumidor final')) {
+            return [];
+        }
+
+        return array_filter([
+            'id' => data_get($customer, 'id'),
+            'nome' => $name ?: null,
+            'cpf_cnpj' => $document ?: null,
+            'telefone' => preg_replace('/\D+/', '', (string) data_get($customer, 'telefone', data_get($customer, 'phone', ''))) ?: null,
+            'email' => trim((string) data_get($customer, 'email', '')) ?: null,
+            'tipo_pessoa' => data_get($customer, 'tipo_pessoa', data_get($customer, 'personType')),
+            'cep' => preg_replace('/\D+/', '', (string) data_get($customer, 'cep', '')) ?: null,
+            'logradouro' => data_get($customer, 'logradouro', data_get($customer, 'street')),
+            'numero' => data_get($customer, 'numero', data_get($customer, 'number')),
+            'bairro' => data_get($customer, 'bairro', data_get($customer, 'neighborhood')),
+            'complemento' => data_get($customer, 'complemento', data_get($customer, 'complement')),
+            'cidade' => data_get($customer, 'cidade', data_get($customer, 'city')),
+            'uf' => strtoupper((string) (data_get($customer, 'uf') ?: data_get($customer, 'state'))) ?: null,
+            'codigo_ibge' => data_get($customer, 'codigo_ibge'),
+            'inscricao_estadual' => data_get($customer, 'inscricao_estadual', data_get($customer, 'stateRegistration')),
+            'indicador_ie' => data_get($customer, 'indicador_ie', '9'),
+            'pais' => data_get($customer, 'pais', data_get($customer, 'country')),
+            'country_code' => data_get($customer, 'country_code'),
+        ], static fn ($value): bool => $value !== null && $value !== '');
+    }
+
+    private function hasIdentifiedCustomer(array $customer): bool
+    {
+        return trim((string) ($customer['nome'] ?? '')) !== ''
+            && preg_match('/^\d{11}$|^\d{14}$/', (string) ($customer['cpf_cnpj'] ?? '')) === 1;
+    }
+
+    private function firstFilled(array $values): mixed
+    {
+        foreach ($values as $value) {
+            if ($value !== null && trim((string) $value) !== '') {
+                return $value;
+            }
+        }
+
+        return '';
     }
 
     private function resolveSaleNumberAndSeries(string $documentType, ?FiscalConfig $fiscalConfig, string $payloadSeries): array
@@ -638,13 +848,33 @@ class SalesController extends Controller
         ];
     }
 
-    private function presentFiscalDocument(?SaleFiscalDocument $document): ?array
+    private function presentFiscalDocument(?SaleFiscalDocument $document, bool $includeXmlBase64 = false, bool $allowXmlDownload = true): ?array
     {
         if (! $document) {
             return null;
         }
 
-        return [
+        $artifacts = is_array(data_get($document->response_payload, 'artifacts'))
+            ? data_get($document->response_payload, 'artifacts')
+            : [];
+        $authorized = $document->status === SaleFiscalDocument::STATUS_AUTHORIZED;
+        $embeddedXml = $this->resolveEmbeddedFiscalXml($document);
+        $hasEmbeddedXml = $embeddedXml !== null;
+        $xmlStatus = data_get($artifacts, 'xml_status');
+        $pdfStatus = data_get($artifacts, 'pdf_status');
+        $xmlAvailable = $authorized
+            && (
+                $hasEmbeddedXml
+                || (
+                    data_get($artifacts, 'xml_available', true) !== false
+                    && ! in_array($xmlStatus, ['processing', 'unavailable'], true)
+                )
+            );
+        $pdfAvailable = $authorized
+            && data_get($artifacts, 'pdf_available', true) !== false
+            && ! in_array($pdfStatus, ['processing', 'unavailable'], true);
+
+        $data = [
             'id' => $document->id,
             'document_type' => $document->document_type,
             'environment' => $document->environment,
@@ -668,9 +898,68 @@ class SalesController extends Controller
             'attempts' => (int) $document->attempts,
             'next_retry_at' => $document->next_retry_at?->toIso8601String(),
             'contingency_printed_at' => $document->contingency_printed_at?->toIso8601String(),
-            'xml_url' => $document->status === SaleFiscalDocument::STATUS_AUTHORIZED ? url("/api/pdv/sales/{$document->sale_id}/fiscal/xml") : null,
-            'pdf_url' => $document->status === SaleFiscalDocument::STATUS_AUTHORIZED ? url("/api/pdv/sales/{$document->sale_id}/fiscal/pdf") : null,
+            'artifacts' => $artifacts ?: null,
+            'xml_available' => $xmlAvailable,
+            'pdf_available' => $pdfAvailable,
+            'xml_status' => $xmlStatus,
+            'pdf_status' => $pdfStatus,
+            'xml_url' => $xmlAvailable ? "/sales/{$document->sale_id}/fiscal/xml" : null,
+            'pdf_url' => $pdfAvailable ? "/sales/{$document->sale_id}/fiscal/pdf" : null,
+            'debug' => data_get($document->response_payload, '_debug'),
         ];
+
+        if ($includeXmlBase64 && $xmlAvailable && ($hasEmbeddedXml || $allowXmlDownload)) {
+            $data['xml_base64'] = $hasEmbeddedXml
+                ? base64_encode($embeddedXml)
+                : $this->resolveFiscalXmlBase64($document);
+            $data['xml_mime_type'] = 'application/xml';
+        }
+
+        return $data;
+    }
+
+    private function resolveEmbeddedFiscalXml(SaleFiscalDocument $document): ?string
+    {
+        if ($document->status !== SaleFiscalDocument::STATUS_AUTHORIZED) {
+            return null;
+        }
+
+        $xml = data_get($document->response_payload, 'xml')
+            ?: data_get($document->response_payload, 'document.xml')
+            ?: data_get($document->response_payload, 'data.document.xml');
+
+        return is_string($xml) && trim($xml) !== '' ? $xml : null;
+    }
+
+    private function resolveFiscalXmlBase64(SaleFiscalDocument $document): ?string
+    {
+        $embeddedXml = $this->resolveEmbeddedFiscalXml($document);
+        if ($embeddedXml !== null) {
+            return base64_encode($embeddedXml);
+        }
+
+        try {
+            $payload = $this->notaAgil->download($document, 'xml', FiscalConfig::query()->first());
+        } catch (Throwable $error) {
+            report($error);
+            return null;
+        }
+
+        $base64 = data_get($payload, 'base64');
+        if (is_string($base64) && trim($base64) !== '') {
+            return preg_replace('/^data:[^;]+;base64,/', '', trim($base64));
+        }
+
+        $content = data_get($payload, 'content') ?: data_get($payload, 'raw');
+        if (! is_string($content) || trim($content) === '') {
+            return null;
+        }
+
+        if ((bool) data_get($payload, 'is_base64') || preg_match('/^[A-Za-z0-9+\/=\r\n]+$/', $content)) {
+            return preg_replace('/\s+/', '', trim($content));
+        }
+
+        return base64_encode($content);
     }
 
     private function resolveEmissionStatusLabel(?SaleFiscalDocument $document): string
@@ -683,6 +972,47 @@ class SalesController extends Controller
             SaleFiscalDocument::STATUS_CANCELLED => 'Cancelada',
             default => 'Autorizada local',
         };
+    }
+
+    private function normalizeSaleItemUnit(mixed $value): string
+    {
+        $unit = mb_strtoupper(trim((string) $value));
+
+        return $unit !== '' ? $unit : 'UN';
+    }
+
+    private function emitSseEvent(string $event, array $payload): void
+    {
+        echo "event: {$event}\n";
+        echo 'data: '.json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)."\n\n";
+
+        if (ob_get_level() > 0) {
+            @ob_flush();
+        }
+        flush();
+    }
+
+    private function fiscalDocumentStreamVersion(SaleFiscalDocument $document): string
+    {
+        return implode('|', [
+            $document->updated_at?->getTimestamp() ?? 0,
+            $document->status,
+            $document->fiscal_status,
+            $document->operational_status,
+            $document->access_key,
+            $document->protocol,
+            hash('sha256', (string) data_get($document->response_payload, 'xml', '')),
+        ]);
+    }
+
+    private function isFiscalStreamTerminal(SaleFiscalDocument $document): bool
+    {
+        return in_array($document->status, [
+            SaleFiscalDocument::STATUS_AUTHORIZED,
+            SaleFiscalDocument::STATUS_REJECTED,
+            SaleFiscalDocument::STATUS_CONTINGENCY_PENDING,
+            SaleFiscalDocument::STATUS_CANCELLED,
+        ], true);
     }
 
     private function presentDetail(Sale $sale, Carbon $now): array

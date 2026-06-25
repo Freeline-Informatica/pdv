@@ -34,7 +34,7 @@ function handleOrderConfirmed(payload) {
             <RestaurantOrderingCore
                 mode="comanda_garcom"
                 title="Lancamento de pedidos"
-                subtitle="Troque mesa/comanda, adicione itens e envie para producao com poucos toques."
+                subtitle="Troque mesa/comanda, adicione itens e envie para produção com poucos toques."
                 confirm-label="Enviar para cozinha/bar"
                 show-waiter-actions
                 @order-confirmed="handleOrderConfirmed"

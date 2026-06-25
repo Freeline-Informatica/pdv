@@ -159,7 +159,7 @@ function updateParameter(fieldId, value) {
 
             <section v-for="group in modifiers.adicionais" :key="group.id" class="modifier-modal__section">
                 <h4>{{ group.nome }}</h4>
-                <small class="text-muted">Escolha ate {{ group.max || 'N' }} opcao(oes)</small>
+                <small class="text-muted">Escolha até {{ group.max || 'N' }} opção(ões)</small>
                 <div class="modifier-modal__checks">
                     <label v-for="option in group.opcoes" :key="option.id" class="modifier-modal__check">
                         <input

@@ -1,4 +1,6 @@
 <script setup>
+import { Search } from 'lucide-vue-next';
+
 defineProps({
     modelValue: {
         type: String,
@@ -14,12 +16,13 @@ const emit = defineEmits(['update:modelValue']);
 </script>
 
 <template>
-    <label class="ui-field-wrap">
+    <label class="ui-field-wrap app-search-field">
         <span class="sr-only">Busca</span>
-        <div class="relative">
-            <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted">⌕</span>
+        <div class="app-search-field__control">
+            <Search class="app-search-field__icon" :size="17" aria-hidden="true" />
             <input
-                class="ui-field pl-8"
+                v-bind="$attrs"
+                class="ui-field app-search-field__input"
                 :value="modelValue"
                 :placeholder="placeholder"
                 @input="emit('update:modelValue', $event.target.value)"
@@ -27,3 +30,23 @@ const emit = defineEmits(['update:modelValue']);
         </div>
     </label>
 </template>
+
+<style scoped>
+.app-search-field__control {
+    position: relative;
+}
+
+.app-search-field__icon {
+    position: absolute;
+    left: 0.85rem;
+    top: 50%;
+    z-index: 1;
+    color: var(--color-text-muted);
+    pointer-events: none;
+    transform: translateY(-50%);
+}
+
+.app-search-field__input {
+    padding-left: 2.65rem;
+}
+</style>

@@ -56,7 +56,7 @@ loadTerminalType();
 <template>
     <div class="space-y-4">
         <SettingsPageHeader
-            title="Configuracoes de Terminal"
+            title="Configurações de Terminal"
             subtitle="Escolha o tipo de terminal para ajustar a experiencia visual do PDV."
         />
 
