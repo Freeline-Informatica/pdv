@@ -10,6 +10,7 @@ use Freeline\Pdv\Http\Controllers\Api\CatalogProductsController;
 use Freeline\Pdv\Http\Controllers\Api\CatalogUnitsController;
 use Freeline\Pdv\Http\Controllers\Api\CategoriesController;
 use Freeline\Pdv\Http\Controllers\Api\CustomersController;
+use Freeline\Pdv\Http\Controllers\Api\MenuFiscalController;
 use Freeline\Pdv\Http\Controllers\Api\OperatorsController;
 use Freeline\Pdv\Http\Controllers\Api\PaymentMethodsController;
 use Freeline\Pdv\Http\Controllers\Api\PaymentPlansController;
@@ -47,6 +48,12 @@ Route::middleware(['pdv.auth.token', 'pdv.audit.trail'])->group(function (): voi
     Route::get('/payment-plans', [PaymentPlansController::class, 'index']);
     Route::get('/customers', [CustomersController::class, 'index']);
     Route::post('/customers', [CustomersController::class, 'store']);
+    Route::get('/menu-fiscal/identificacao', [MenuFiscalController::class, 'identificacao']);
+    Route::post('/menu-fiscal/arquivo-i', [MenuFiscalController::class, 'arquivoI']);
+    Route::post('/menu-fiscal/arquivo-ii', [MenuFiscalController::class, 'arquivoII']);
+    Route::post('/menu-fiscal/arquivo-iii', [MenuFiscalController::class, 'arquivoIII']);
+    Route::get('/menu-fiscal/mesas-abertas', [MenuFiscalController::class, 'mesasAbertas']);
+    Route::post('/menu-fiscal/arquivo-iv', [MenuFiscalController::class, 'arquivoIV']);
 
     Route::middleware('pdv.settings.access')->group(function () use ($standaloneRoutesEnabled): void {
         Route::get('/settings/company', [SettingsController::class, 'company']);

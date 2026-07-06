@@ -39,6 +39,7 @@ import StockConsultationView from '../views/settings/StockConsultationView.vue';
 import StockAdjustmentsView from '../views/settings/StockAdjustmentsView.vue';
 import StockInventoryView from '../views/settings/StockInventoryView.vue';
 import SalesHistoryView from '../views/settings/SalesHistoryView.vue';
+import MenuFiscalView from '../views/settings/MenuFiscalView.vue';
 import CashRegistersView from '../views/settings/CashRegistersView.vue';
 import CustomersView from '../views/settings/CustomersView.vue';
 import SuppliersView from '../views/settings/SuppliersView.vue';
@@ -72,6 +73,10 @@ const routes = [
                 path: 'pdv/restaurante/producao/bar',
                 component: RestaurantProductionView,
                 meta: { requiresTerminal: true, productionSector: 'bar' },
+            },
+            {
+                path: 'menu-fiscal',
+                component: MenuFiscalView,
             },
         ],
     },
@@ -168,6 +173,11 @@ const routes = [
             {
                 path: 'vendas',
                 component: SalesHistoryView,
+            },
+            {
+                path: 'menu-fiscal',
+                component: MenuFiscalView,
+                meta: { bypassSettingsAccess: true },
             },
             {
                 path: 'caixa',
@@ -317,6 +327,10 @@ router.beforeEach(async (to, from) => {
     }
 
     if (!toSettings) {
+        return true;
+    }
+
+    if (to.meta.bypassSettingsAccess) {
         return true;
     }
 

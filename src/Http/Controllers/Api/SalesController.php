@@ -7,6 +7,10 @@ use Freeline\Pdv\Contracts\ProductCatalogRepository;
 use Freeline\Pdv\Contracts\StockMovementService;
 use Freeline\Pdv\Http\Controllers\Controller;
 use Freeline\Pdv\Models\FiscalConfig;
+use Freeline\Pdv\Models\PafDailyPaymentTotal;
+use Freeline\Pdv\Models\PafDav;
+use Freeline\Pdv\Models\PafExternalRequisition;
+use Freeline\Pdv\Models\PafPreSale;
 use Freeline\Pdv\Models\RestaurantFicha;
 use Freeline\Pdv\Models\Sale;
 use Freeline\Pdv\Models\SaleFiscalDocument;
@@ -36,8 +40,7 @@ class SalesController extends Controller
         private readonly StockMovementService $stockMovements,
         private readonly CompanyContextResolver $companyContext,
         private readonly NotaAgilFiscalService $notaAgil,
-    ) {
-    }
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -111,7 +114,7 @@ class SalesController extends Controller
 
         DB::transaction(function () use ($sale, $payload, $operatorId): void {
             $record = $this->scopedSaleQuery()
-                ->with('items')
+                ->with(['items', 'payments'])
                 ->lockForUpdate()
                 ->findOrFail($sale->id);
 
@@ -136,7 +139,9 @@ class SalesController extends Controller
 
             foreach ($record->items as $item) {
                 $productId = $item->product_id ?: ($item->catalog_product_id ?? null);
-                if (! $productId) continue;
+                if (! $productId) {
+                    continue;
+                }
 
                 $this->stockMovements->increase($productId, (float) $item->quantidade, [
                     'origem' => 'cancelamento_venda',
@@ -153,6 +158,20 @@ class SalesController extends Controller
             $record->canceled_by = $operatorId;
             $record->cancellation_reason = trim($payload['motivo']);
             $record->save();
+
+            $fiscalConfig = config('pdv.mode') === 'standalone'
+                ? FiscalConfig::query()->first()
+                : null;
+            if ($this->isPafEnabled($fiscalConfig)) {
+                foreach ($record->payments as $payment) {
+                    $this->recordPafDailyPaymentTotal(
+                        $record,
+                        (string) ($payment->metodo_nome ?: 'Pagamento'),
+                        round((float) $payment->valor * -1, 2),
+                        $payment->paf_document_type_code ?: $this->pafDocumentTypeCode((string) $record->document_type),
+                    );
+                }
+            }
 
             $record->fiscalDocument()
                 ->where('status', '!=', SaleFiscalDocument::STATUS_CANCELLED)
@@ -241,6 +260,9 @@ class SalesController extends Controller
             'complementary.restaurant_table_id' => ['nullable', 'string', 'max:80'],
             'complementary.restaurant_ficha_code' => ['nullable', 'string', 'max:80'],
             'complementary.restaurant_table_code' => ['nullable', 'string', 'max:80'],
+            'complementary.paf_dav_id' => ['nullable', 'uuid'],
+            'complementary.paf_pre_sale_id' => ['nullable', 'uuid'],
+            'complementary.paf_external_requisition_id' => ['nullable', 'uuid'],
             'totals' => ['nullable', 'array'],
         ]);
 
@@ -256,6 +278,9 @@ class SalesController extends Controller
             $fiscalConfig = config('pdv.mode') === 'standalone'
                 ? FiscalConfig::query()->lockForUpdate()->first()
                 : null;
+            $pafEnabled = $this->isPafEnabled($fiscalConfig);
+            $pafReferences = $this->resolvePafReferences($payload, $scope);
+            $fiscalObservation = $this->buildPafFiscalObservation($payload, $pafReferences);
             [$saleNumber, $saleSeries, $nextFiscalNumber] = $this->resolveSaleNumberAndSeries(
                 $documentType,
                 $fiscalConfig,
@@ -271,15 +296,11 @@ class SalesController extends Controller
             $notaAgilEnabled = $this->notaAgil->isEnabled($fiscalConfig);
             $operationCode = null;
             if ($notaAgilEnabled && $fiscalConfig) {
-                try {
-                    $this->notaAgil->requireCompanyId($fiscalConfig);
-                    $operationCode = $this->notaAgil->operationCode($fiscalConfig, $documentType);
-                    if (! $operationCode) {
-                        throw new NotaAgilConfigurationException('Configure o código de operação NotaAgil para '.strtoupper($documentType).'.');
-                    }
-                } catch (NotaAgilConfigurationException $error) {
+                $operationCode = $this->notaAgil->operationCode($fiscalConfig, $documentType);
+                if (! $operationCode) {
+                    $label = $documentType === 'nfe' ? 'NF-e' : 'NFC-e';
                     throw ValidationException::withMessages([
-                        'fiscal' => [$error->getMessage()],
+                        'fiscal' => ["Operation code NotaAgil ausente para {$label}. Configure o código técnico da operação fiscal antes de emitir por operação v2."],
                     ]);
                 }
             }
@@ -329,6 +350,10 @@ class SalesController extends Controller
                 'total_bruto' => $productsTotal,
                 'total_financeiro' => $totalFinanceiro,
                 'juros_total' => $interestTotal,
+                'paf_dav_id' => $pafReferences['dav']?->id,
+                'paf_pre_sale_id' => $pafReferences['pre_sale']?->id,
+                'paf_external_requisition_id' => $pafReferences['external_requisition']?->id,
+                'fiscal_observation' => $fiscalObservation,
                 'sold_at' => $now,
                 'created_by' => $operatorId,
             ]);
@@ -373,6 +398,16 @@ class SalesController extends Controller
                     ]);
                 }
 
+                if ($pafEnabled) {
+                    $this->assertPafSaleItemIsRegistered(
+                        $item,
+                        $catalogProduct,
+                        $productName,
+                        $productCode,
+                        $unit,
+                    );
+                }
+
                 $saleItemPayload = [
                     'sale_id' => $sale->id,
                     'product_id' => $productId,
@@ -391,6 +426,7 @@ class SalesController extends Controller
                 SaleItem::query()->create($saleItemPayload);
             }
 
+            $pafDocumentTypeCode = $this->pafDocumentTypeCode($documentType);
             foreach ($paymentsPayload as $payment) {
                 $amount = round((float) ($payment['amount'] ?? 0), 2);
                 $methodName = trim((string) ($payment['method_name'] ?? 'Pagamento'));
@@ -400,7 +436,12 @@ class SalesController extends Controller
                     'metodo_nome' => $methodName ?: 'Pagamento',
                     'descricao' => $this->buildPaymentDescription($payment),
                     'valor' => $amount,
+                    'paf_document_type_code' => $pafDocumentTypeCode,
                 ]);
+
+                if ($pafEnabled) {
+                    $this->recordPafDailyPaymentTotal($sale, $methodName ?: 'Pagamento', $amount, $pafDocumentTypeCode);
+                }
             }
 
             if ($fiscalConfig && $nextFiscalNumber > 0) {
@@ -413,6 +454,7 @@ class SalesController extends Controller
             }
 
             $this->markRestaurantFichaAsPaid($payload, $now);
+            $this->markPafReferencesAsConverted($pafReferences, $sale, $now);
 
             $fiscalDocument = null;
             if ($notaAgilEnabled && $fiscalConfig && $operationCode) {
@@ -649,6 +691,196 @@ class SalesController extends Controller
         return '';
     }
 
+    private function isPafEnabled(?FiscalConfig $config): bool
+    {
+        return $config !== null && (bool) ($config->paf_enabled ?? false);
+    }
+
+    private function resolvePafReferences(array $payload, array $scope): array
+    {
+        $davId = trim((string) data_get($payload, 'complementary.paf_dav_id', ''));
+        $preSaleId = trim((string) data_get($payload, 'complementary.paf_pre_sale_id', ''));
+        $externalRequisitionId = trim((string) data_get($payload, 'complementary.paf_external_requisition_id', ''));
+
+        $dav = null;
+        if ($davId !== '') {
+            $davQuery = PafDav::query()->lockForUpdate();
+            if (config('pdv.mode') === 'erp') {
+                $davQuery
+                    ->where('grupo_empresarial_id', $scope['grupo_id'])
+                    ->where('estabelecimento_id', $scope['estabelecimento_id']);
+            }
+            $dav = $davQuery->find($davId);
+            if (! $dav) {
+                throw ValidationException::withMessages([
+                    'complementary.paf_dav_id' => ['DAV não encontrado.'],
+                ]);
+            }
+            if ($dav->status !== PafDav::STATUS_OPEN || $dav->converted_sale_id !== null) {
+                throw ValidationException::withMessages([
+                    'complementary.paf_dav_id' => ['DAV já convertido em documento fiscal.'],
+                ]);
+            }
+        }
+
+        $preSale = null;
+        if ($preSaleId !== '') {
+            $preSale = PafPreSale::query()->lockForUpdate()->find($preSaleId);
+            if (! $preSale) {
+                throw ValidationException::withMessages([
+                    'complementary.paf_pre_sale_id' => ['Pré-venda não encontrada.'],
+                ]);
+            }
+            if ($preSale->status !== PafPreSale::STATUS_OPEN || $preSale->converted_sale_id !== null) {
+                throw ValidationException::withMessages([
+                    'complementary.paf_pre_sale_id' => ['Pré-venda já convertida em documento fiscal.'],
+                ]);
+            }
+        }
+
+        $externalRequisition = null;
+        if ($externalRequisitionId !== '') {
+            $externalRequisition = PafExternalRequisition::query()->lockForUpdate()->find($externalRequisitionId);
+            if (! $externalRequisition) {
+                throw ValidationException::withMessages([
+                    'complementary.paf_external_requisition_id' => ['Requisição externa não encontrada.'],
+                ]);
+            }
+            if ($externalRequisition->status !== PafExternalRequisition::STATUS_RECEIVED || $externalRequisition->attended_sale_id !== null) {
+                throw ValidationException::withMessages([
+                    'complementary.paf_external_requisition_id' => ['Requisição externa já atendida ou denegada.'],
+                ]);
+            }
+        }
+
+        return [
+            'dav' => $dav,
+            'pre_sale' => $preSale,
+            'external_requisition' => $externalRequisition,
+        ];
+    }
+
+    private function buildPafFiscalObservation(array $payload, array $references): ?string
+    {
+        $parts = [];
+        $base = trim((string) (
+            data_get($payload, 'complementary.fiscal_observation')
+            ?: data_get($payload, 'complementary.observacao_nota')
+            ?: ''
+        ));
+        if ($base !== '') {
+            $parts[] = $base;
+        }
+
+        $dav = $references['dav'] ?? null;
+        if ($dav instanceof PafDav) {
+            $parts[] = '#DAV '.trim((string) $dav->number);
+        }
+
+        $externalRequisition = $references['external_requisition'] ?? null;
+        if ($externalRequisition instanceof PafExternalRequisition) {
+            $parts[] = 'RE '.trim((string) $externalRequisition->cre);
+        }
+
+        $observation = trim(implode(' | ', array_unique(array_filter($parts))));
+
+        return $observation !== '' ? $observation : null;
+    }
+
+    private function assertPafSaleItemIsRegistered(
+        array $item,
+        ?array $catalogProduct,
+        string $productName,
+        ?string $productCode,
+        string $unit,
+    ): void {
+        if (! $catalogProduct) {
+            throw ValidationException::withMessages([
+                'items' => ['No modo PAF-NFC-e, a venda de item fiscal exige produto cadastrado.'],
+            ]);
+        }
+
+        if (trim($productName) === '' || trim((string) $productCode) === '' || trim($unit) === '') {
+            $label = trim((string) ($item['nome'] ?? $productName ?: 'Produto'));
+            throw ValidationException::withMessages([
+                'items' => ["Produto {$label} sem código/GTIN, descrição ou unidade para venda no modo PAF-NFC-e."],
+            ]);
+        }
+    }
+
+    private function markPafReferencesAsConverted(array $references, Sale $sale, Carbon $now): void
+    {
+        $dav = $references['dav'] ?? null;
+        if ($dav instanceof PafDav) {
+            $dav->status = PafDav::STATUS_CONVERTED;
+            $dav->converted_sale_id = $sale->id;
+            $dav->converted_at = $now;
+            $dav->save();
+        }
+
+        $preSale = $references['pre_sale'] ?? null;
+        if ($preSale instanceof PafPreSale) {
+            $preSale->status = PafPreSale::STATUS_CONVERTED;
+            $preSale->converted_sale_id = $sale->id;
+            $preSale->converted_at = $now;
+            $preSale->save();
+        }
+
+        $externalRequisition = $references['external_requisition'] ?? null;
+        if ($externalRequisition instanceof PafExternalRequisition) {
+            $externalRequisition->status = PafExternalRequisition::STATUS_ATTENDED;
+            $externalRequisition->attended_sale_id = $sale->id;
+            $externalRequisition->attended_at = $now;
+            $externalRequisition->save();
+        }
+    }
+
+    private function recordPafDailyPaymentTotal(Sale $sale, string $methodName, float $amount, ?string $documentTypeCode = null): void
+    {
+        if (abs($amount) < 0.005) {
+            return;
+        }
+
+        $movementDate = ($sale->sold_at ?? $sale->created_at ?? now())->toDateString();
+        $customerDocument = preg_replace('/\D+/', '', (string) data_get($sale->customer_snapshot, 'cpf_cnpj', ''));
+        if (! in_array(strlen($customerDocument), [11, 14], true)) {
+            $customerDocument = null;
+        }
+
+        $paymentMethodName = mb_substr(trim($methodName) ?: 'Pagamento', 0, 25);
+        $documentTypeCode = $documentTypeCode ?: $this->pafDocumentTypeCode((string) $sale->document_type);
+
+        $query = PafDailyPaymentTotal::query()
+            ->whereDate('movement_date', $movementDate)
+            ->where('payment_method_name', $paymentMethodName)
+            ->where('document_type_code', $documentTypeCode)
+            ->whereNull('non_tax_document_number');
+
+        $customerDocument === null
+            ? $query->whereNull('customer_document')
+            : $query->where('customer_document', $customerDocument);
+
+        $total = $query->lockForUpdate()->first() ?? new PafDailyPaymentTotal([
+            'movement_date' => $movementDate,
+            'payment_method_name' => $paymentMethodName,
+            'document_type_code' => $documentTypeCode,
+            'customer_document' => $customerDocument,
+            'non_tax_document_number' => null,
+            'amount' => 0,
+        ]);
+
+        $total->amount = round((float) $total->amount + $amount, 2);
+        $total->save();
+    }
+
+    private function pafDocumentTypeCode(string $documentType): string
+    {
+        return match (mb_strtolower($documentType)) {
+            'nfce', 'nfe' => '1',
+            default => '2',
+        };
+    }
+
     private function markRestaurantFichaAsPaid(array $payload, Carbon $now): void
     {
         $fichaId = trim((string) data_get($payload, 'complementary.restaurant_ficha_id', ''));
@@ -687,7 +919,10 @@ class SalesController extends Controller
     private function normalizeDocumentType(string $documentModel): string
     {
         $normalized = mb_strtolower(preg_replace('/[^a-z]/', '', $documentModel));
-        if ($normalized === 'nfe') return 'nfe';
+        if ($normalized === 'nfe') {
+            return 'nfe';
+        }
+
         return 'nfce';
     }
 
@@ -942,6 +1177,7 @@ class SalesController extends Controller
             $payload = $this->notaAgil->download($document, 'xml', FiscalConfig::query()->first());
         } catch (Throwable $error) {
             report($error);
+
             return null;
         }
 
@@ -1045,8 +1281,13 @@ class SalesController extends Controller
     private function documentLabel(string $documentType): string
     {
         $normalized = mb_strtolower($documentType);
-        if ($normalized === 'nfce') return 'NFC-e';
-        if ($normalized === 'nfe') return 'NF-e';
+        if ($normalized === 'nfce') {
+            return 'NFC-e';
+        }
+        if ($normalized === 'nfe') {
+            return 'NF-e';
+        }
+
         return mb_strtoupper($documentType);
     }
 

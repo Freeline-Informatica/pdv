@@ -186,6 +186,10 @@ const supportData = reactive({
     tipos_preco: [],
     situacoes: [],
     produto_tipos: [],
+    tipo_item_options: [],
+    natureza_item_options: [],
+    origem_mercadoria_options: [],
+    fiscal_tag_options: [],
 });
 
 function createEmptyPhotoSlot() {
@@ -249,7 +253,9 @@ const form = reactive({
     codigo_operacional_manual: false,
     descricao: '',
     descricao_curta: '',
-    produto_tipo: 'mercadoria',
+    produto_tipo: 'NORMAL',
+    tipo_item: '00',
+    natureza_item: 'MERCADORIA',
     situacao: 'ativo',
     liberado: 'sim',
     marca: '',
@@ -268,6 +274,11 @@ const form = reactive({
     fiscal_ncm: '',
     fiscal_ncm_ex: '',
     fiscal_cest: '',
+    origem_mercadoria: '',
+    servico_codigo: '',
+    codigo_nbs: '',
+    cod_classe_tributo: '',
+    fiscal_tags: [],
     created_at: '',
     updated_at: '',
     permite_fracionamento: false,
@@ -378,6 +389,11 @@ const isEditing = computed(() => !!form.id);
 const currentProductId = computed(() => String(route.params.produtoId || ''));
 const isCreateRoute = computed(() => currentProductId.value === '' || currentProductId.value === 'novo');
 const canSave = computed(() => form.descricao.trim() !== '');
+const isServiceProduct = computed(() => (
+    String(form.produto_tipo || '').toUpperCase() === 'SERVICO'
+    || String(form.tipo_item || '').trim() === '09'
+    || String(form.natureza_item || '').toUpperCase() === 'SERVICO'
+));
 const barcodeMainMaxLength = computed(() => getGtinLength(form.ean_tipo) || 14);
 const barcodeMainError = computed(() => {
     if (!String(form.ean_codigo || '').trim()) return '';
@@ -1001,6 +1017,24 @@ watch(ncmLookupSearch, () => {
 });
 
 watch(
+    () => form.produto_tipo,
+    (value) => {
+        if (String(value || '').toUpperCase() === 'SERVICO') {
+            form.tipo_item = '09';
+            form.natureza_item = 'SERVICO';
+            form.fiscal_tags = Array.from(new Set([...(form.fiscal_tags || []), 'SERVICO_ISS']));
+            form.fiscal_ncm = '';
+            form.fiscal_cest = '';
+            form.origem_mercadoria = '';
+        } else if (form.tipo_item === '09' || form.natureza_item === 'SERVICO') {
+            form.tipo_item = '00';
+            form.natureza_item = 'MERCADORIA';
+            form.fiscal_tags = (form.fiscal_tags || []).filter((tag) => tag !== 'SERVICO_ISS');
+        }
+    },
+);
+
+watch(
     () => [form.ean_tipo, form.ean_codigo],
     () => {
         form.ean_tipo = normalizeGtinType(form.ean_tipo);
@@ -1068,7 +1102,9 @@ function resetForm() {
     form.codigo_operacional_manual = false;
     form.descricao = '';
     form.descricao_curta = '';
-    form.produto_tipo = 'mercadoria';
+    form.produto_tipo = 'NORMAL';
+    form.tipo_item = '00';
+    form.natureza_item = 'MERCADORIA';
     form.situacao = 'ativo';
     form.liberado = 'sim';
     form.marca = '';
@@ -1087,6 +1123,11 @@ function resetForm() {
     form.fiscal_ncm = '';
     form.fiscal_ncm_ex = '';
     form.fiscal_cest = '';
+    form.origem_mercadoria = '';
+    form.servico_codigo = '';
+    form.codigo_nbs = '';
+    form.cod_classe_tributo = '';
+    form.fiscal_tags = [];
     form.created_at = '';
     form.updated_at = '';
     form.permite_fracionamento = false;
@@ -1210,7 +1251,9 @@ function applyFormPayload(payload) {
     form.codigo_operacional_manual = !!payload.codigo_operacional_manual;
     form.descricao = payload.descricao || '';
     form.descricao_curta = payload.descricao_curta || '';
-    form.produto_tipo = payload.produto_tipo || 'mercadoria';
+    form.produto_tipo = payload.produto_tipo || 'NORMAL';
+    form.tipo_item = payload.tipo_item || payload.fiscal_base?.tipo_item || (form.produto_tipo === 'SERVICO' ? '09' : '00');
+    form.natureza_item = payload.natureza_item || payload.fiscal_base?.natureza_item || (form.produto_tipo === 'SERVICO' ? 'SERVICO' : 'MERCADORIA');
     form.situacao = payload.situacao || 'ativo';
     form.liberado = payload.liberado || 'sim';
     form.marca = payload.marca || '';
@@ -1236,9 +1279,18 @@ function applyFormPayload(payload) {
         ? payload.atributos_logisticos.clientes_vinculados.map((value) => String(value || '').trim()).filter(Boolean)
         : [];
 
-    form.fiscal_ncm = String(payload.atributos_logisticos?.fiscal_ncm || '').trim();
+    form.fiscal_ncm = String(payload.ncm || payload.fiscal_base?.ncm || payload.atributos_logisticos?.fiscal_ncm || '').trim();
     form.fiscal_ncm_ex = String(payload.atributos_logisticos?.fiscal_ncm_ex || '').trim();
-    form.fiscal_cest = String(payload.atributos_logisticos?.fiscal_cest || '').trim();
+    form.fiscal_cest = String(payload.cest || payload.fiscal_base?.cest || payload.atributos_logisticos?.fiscal_cest || '').trim();
+    form.origem_mercadoria = payload.origem_mercadoria != null
+        ? String(payload.origem_mercadoria)
+        : (payload.fiscal_base?.origem_mercadoria != null ? String(payload.fiscal_base.origem_mercadoria) : '');
+    form.servico_codigo = String(payload.servico_codigo || payload.fiscal_base?.servico_codigo || '').trim();
+    form.codigo_nbs = String(payload.codigo_nbs || payload.fiscal_base?.codigo_nbs || '').trim();
+    form.cod_classe_tributo = String(payload.cod_classe_tributo || payload.fiscal_base?.cod_classe_tributo || '').trim();
+    form.fiscal_tags = Array.isArray(payload.fiscal_tags)
+        ? payload.fiscal_tags.map((tag) => String(tag || '').trim()).filter(Boolean)
+        : (Array.isArray(payload.fiscal_base?.fiscal_tags) ? payload.fiscal_base.fiscal_tags.map((tag) => String(tag || '').trim()).filter(Boolean) : []);
 
     form.precos = Array.isArray(payload.precos)
         ? payload.precos.map((row) => ({
@@ -1548,10 +1600,6 @@ function selectNcmLookupRow(row) {
 
     form.fiscal_ncm = ncm;
     form.fiscal_cest = String(row?.cest || form.fiscal_cest || '').trim();
-
-    if (!form.fiscal_item_profile_id && row?.id) {
-        form.fiscal_item_profile_id = row.id;
-    }
 
     closeNcmLookupModal();
     showSaveToast('NCM aplicado ao produto.');
@@ -3222,6 +3270,15 @@ function buildPayload() {
         descricao: form.descricao,
         descricao_curta: form.descricao_curta || null,
         produto_tipo: form.produto_tipo || null,
+        tipo_item: form.tipo_item || null,
+        natureza_item: form.natureza_item || null,
+        ncm: normalizeNcmValue(form.fiscal_ncm),
+        cest: String(form.fiscal_cest || '').trim() || null,
+        origem_mercadoria: form.origem_mercadoria === '' ? null : form.origem_mercadoria,
+        servico_codigo: String(form.servico_codigo || '').trim() || null,
+        codigo_nbs: String(form.codigo_nbs || '').trim() || null,
+        cod_classe_tributo: String(form.cod_classe_tributo || '').trim() || null,
+        fiscal_tags: Array.isArray(form.fiscal_tags) ? form.fiscal_tags : [],
         situacao: form.situacao || null,
         liberado: form.liberado || 'sim',
         marca: form.marca || null,
@@ -3273,6 +3330,10 @@ async function loadSupportData() {
     supportData.tipos_preco = Array.isArray(data?.tipos_preco) ? data.tipos_preco : [];
     supportData.situacoes = Array.isArray(data?.situacoes) ? data.situacoes : [];
     supportData.produto_tipos = Array.isArray(data?.produto_tipos) ? data.produto_tipos : [];
+    supportData.tipo_item_options = Array.isArray(data?.tipo_item_options) ? data.tipo_item_options : [];
+    supportData.natureza_item_options = Array.isArray(data?.natureza_item_options) ? data.natureza_item_options : [];
+    supportData.origem_mercadoria_options = Array.isArray(data?.origem_mercadoria_options) ? data.origem_mercadoria_options : [];
+    supportData.fiscal_tag_options = Array.isArray(data?.fiscal_tag_options) ? data.fiscal_tag_options : [];
 }
 
 async function loadProduct(productId) {
@@ -3861,6 +3922,24 @@ onMounted(bootstrap);
                                 </div>
                             </div>
                             <div class="product-fiscal-grid">
+                                <label class="ui-field-wrap">
+                                    <span class="ui-label">Tipo do item*</span>
+                                    <select v-model="form.produto_tipo" class="ui-field">
+                                        <option v-for="option in supportData.produto_tipos" :key="option.id" :value="option.id">{{ option.label }}</option>
+                                    </select>
+                                </label>
+                                <label class="ui-field-wrap">
+                                    <span class="ui-label">Tipo SPED*</span>
+                                    <select v-model="form.tipo_item" class="ui-field">
+                                        <option v-for="option in supportData.tipo_item_options" :key="option.id" :value="option.id">{{ option.id }} - {{ option.label }}</option>
+                                    </select>
+                                </label>
+                                <label class="ui-field-wrap">
+                                    <span class="ui-label">Natureza fiscal*</span>
+                                    <select v-model="form.natureza_item" class="ui-field">
+                                        <option v-for="option in supportData.natureza_item_options" :key="option.id" :value="option.id">{{ option.label }}</option>
+                                    </select>
+                                </label>
                                 <div class="product-fiscal-classification">
                                     <label class="ui-field-wrap">
                                         <span class="ui-label">Classificação mercadológica (nível principal)</span>
@@ -3881,7 +3960,7 @@ onMounted(bootstrap);
                                         </div>
                                     </label>
                                 </div>
-                                <label class="ui-field-wrap product-fiscal-ncm">
+                                <label v-if="!isServiceProduct" class="ui-field-wrap product-fiscal-ncm">
                                     <span class="ui-label">NCM*</span>
                                     <div class="field-with-icon">
                                         <input v-model="form.fiscal_ncm" class="ui-field product-fiscal-short-input" placeholder="Ex: 1234.56.78">
@@ -3890,8 +3969,24 @@ onMounted(bootstrap);
                                         </button>
                                     </div>
                                 </label>
-                                <AppInput v-model="form.fiscal_ncm_ex" label="NCM Ex" placeholder="Ex: 01" class="product-fiscal-short-field" />
-                                <AppInput v-model="form.fiscal_cest" label="CEST" placeholder="Ex: 1234567" class="product-fiscal-short-field" />
+                                <AppInput v-if="!isServiceProduct" v-model="form.fiscal_ncm_ex" label="NCM Ex" placeholder="Ex: 01" class="product-fiscal-short-field" />
+                                <AppInput v-if="!isServiceProduct" v-model="form.fiscal_cest" label="CEST" placeholder="Ex: 1234567" class="product-fiscal-short-field" />
+                                <label v-if="!isServiceProduct" class="ui-field-wrap">
+                                    <span class="ui-label">Origem da mercadoria</span>
+                                    <select v-model="form.origem_mercadoria" class="ui-field">
+                                        <option value="">Selecione</option>
+                                        <option v-for="option in supportData.origem_mercadoria_options" :key="option.id" :value="option.id">{{ option.label }}</option>
+                                    </select>
+                                </label>
+                                <AppInput v-if="isServiceProduct" v-model="form.servico_codigo" label="Código de serviço*" placeholder="Ex: 1.01" />
+                                <AppInput v-if="isServiceProduct" v-model="form.codigo_nbs" label="Código NBS" placeholder="Quando exigido" />
+                                <AppInput v-model="form.cod_classe_tributo" label="Classe tributária" placeholder="Opcional" />
+                                <label class="ui-field-wrap product-fiscal-classification">
+                                    <span class="ui-label">Tags fiscais</span>
+                                    <select v-model="form.fiscal_tags" class="ui-field" multiple size="5">
+                                        <option v-for="option in supportData.fiscal_tag_options" :key="option.id" :value="option.id">{{ option.label }}</option>
+                                    </select>
+                                </label>
                             </div>
                         </div>
                     </section>

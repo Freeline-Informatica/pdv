@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "1f16953644e01e3adf2e290364803153",
+    "content-hash": "c38cfbdef3f825d67efa66c3b5898a13",
     "packages": [
         {
             "name": "brick/math",
@@ -2327,16 +2327,16 @@
         },
         {
             "name": "notagil/integration-sdk",
-            "version": "v0.3.2",
+            "version": "v0.4.3",
             "source": {
                 "type": "git",
                 "url": "https://github.com/sabbajohn/notagil-integration-sdk.git",
-                "reference": "8ddbb92369276617dfcbd0b1396364847497a122"
+                "reference": "abdb5e2d59ad1744ef4320931fd985f4555dae15"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/sabbajohn/notagil-integration-sdk/zipball/8ddbb92369276617dfcbd0b1396364847497a122",
-                "reference": "8ddbb92369276617dfcbd0b1396364847497a122",
+                "url": "https://api.github.com/repos/sabbajohn/notagil-integration-sdk/zipball/abdb5e2d59ad1744ef4320931fd985f4555dae15",
+                "reference": "abdb5e2d59ad1744ef4320931fd985f4555dae15",
                 "shasum": ""
             },
             "require": {
@@ -2375,7 +2375,7 @@
                 "issues": "https://github.com/sabbajohn/notagil-integration-sdk/issues",
                 "source": "https://github.com/sabbajohn/notagil-integration-sdk"
             },
-            "time": "2026-06-15T14:17:18+00:00"
+            "time": "2026-07-06T12:44:53+00:00"
         },
         {
             "name": "nunomaduro/termwind",

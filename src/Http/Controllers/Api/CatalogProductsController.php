@@ -12,6 +12,7 @@ use Freeline\Pdv\Models\ProdutoCodigoBarras;
 use Freeline\Pdv\Models\ProdutoEstoque;
 use Freeline\Pdv\Models\ProdutoFamilia;
 use Freeline\Pdv\Models\ProdutoPreco;
+use Freeline\Pdv\Models\ProductFiscalTag;
 use Freeline\Pdv\Models\UnidadeMedida;
 use Freeline\Pdv\Services\NotaAgilConfigurationException;
 use Freeline\Pdv\Services\NotaAgilFiscalService;
@@ -28,10 +29,61 @@ use Throwable;
 
 class CatalogProductsController extends Controller
 {
+    private const PRODUTO_TIPOS = [
+        'NORMAL' => 'Normal',
+        'BASICO' => 'Básico',
+        'COMPOSTO' => 'Composto',
+        'SERVICO' => 'Serviço',
+    ];
+
+    private const TIPO_ITEM_OPTIONS = [
+        '00' => 'Mercadoria para revenda',
+        '01' => 'Matéria-prima',
+        '02' => 'Embalagem',
+        '03' => 'Produto em processo',
+        '04' => 'Produto acabado',
+        '05' => 'Subproduto',
+        '06' => 'Produto intermediário',
+        '07' => 'Material de uso e consumo',
+        '08' => 'Ativo imobilizado',
+        '09' => 'Serviço',
+        '10' => 'Outros insumos',
+        '99' => 'Outros',
+    ];
+
+    private const NATUREZA_ITEM_OPTIONS = [
+        'PRODUTO' => 'Produto',
+        'SERVICO' => 'Serviço',
+        'MERCADORIA' => 'Mercadoria',
+        'INSUMO' => 'Insumo',
+        'PATRIMONIO' => 'Patrimônio',
+        'EMBALAGEM' => 'Embalagem',
+        'MATERIAL_CONSUMO' => 'Material de uso e consumo',
+    ];
+
+    private const FISCAL_TAG_OPTIONS = [
+        'SUJEITO_ST' => 'Sujeito a ST',
+        'MONOFASICO' => 'Monofásico',
+        'COMBUSTIVEL' => 'Combustível',
+        'MEDICAMENTO' => 'Medicamento',
+        'BEBIDA_FRIA' => 'Bebida fria',
+        'CESTA_BASICA' => 'Cesta básica',
+        'IMPORTADO' => 'Importado',
+        'ISENTO' => 'Isento',
+        'NAO_TRIBUTADO' => 'Não tributado',
+        'REDUCAO_BASE' => 'Redução de base',
+        'PRODUCAO_PROPRIA' => 'Produção própria',
+        'ADQUIRIDO_TERCEIROS' => 'Adquirido de terceiros',
+        'USO_CONSUMO' => 'Uso e consumo',
+        'ATIVO_IMOBILIZADO' => 'Ativo imobilizado',
+        'SERVICO_ISS' => 'Serviço ISS',
+        'USO_INTERNO' => 'Uso interno',
+    ];
+
     public function index(Request $request): JsonResponse
     {
         $query = Produto::query()
-            ->with(['unidadeMedida:id,unidade,descricao,decimais', 'familia:id,nome', 'classificacaoMercadologica:id,descricao', 'estoque:id,produto_id,quantidade,quantidade_minima'])
+            ->with(['unidadeMedida:id,unidade,descricao,decimais', 'familia:id,nome', 'classificacaoMercadologica:id,descricao', 'estoque:id,produto_id,quantidade,quantidade_minima', 'fiscalTags:id,produto_id,tag'])
             ->withCount(['codigosBarras as codigos_barras_count', 'precos as precos_count'])
             ->orderBy('descricao');
 
@@ -63,6 +115,14 @@ class CatalogProductsController extends Controller
                 'situacao' => $produto->situacao,
                 'liberado' => $produto->liberado,
                 'marca' => $produto->marca,
+                'produto_tipo' => $produto->produto_tipo,
+                'tipo_item' => $produto->tipo_item,
+                'natureza_item' => $produto->natureza_item,
+                'ncm' => $produto->ncm,
+                'cest' => $produto->cest,
+                'origem_mercadoria' => $produto->origem_mercadoria,
+                'servico_codigo' => $produto->servico_codigo,
+                'fiscal_tags' => $produto->fiscalTags->pluck('tag')->values()->all(),
                 'unidade_medida' => $produto->unidadeMedida ? [
                     'id' => $produto->unidadeMedida->id,
                     'unidade' => $produto->unidadeMedida->unidade,
@@ -98,7 +158,7 @@ class CatalogProductsController extends Controller
                 ->orderBy('nivel')
                 ->orderBy('ordem')
                 ->orderBy('descricao')
-                ->get(['id', 'parent_id', 'codigo', 'descricao', 'nivel']),
+                ->get(['id', 'parent_id', 'codigo', 'descricao', 'nivel', 'tipo_item_default', 'natureza_item_default', 'fiscal_tags_default']),
             'fiscal_item_profiles' => FiscalItemProfile::query()->where('active', true)->orderBy('display_name')->get(['id', 'display_name', 'item_type', 'ncm', 'ncm_descricao', 'cest']),
             'tipos_preco' => [
                 ['id' => 'venda', 'label' => 'Venda'],
@@ -111,10 +171,25 @@ class CatalogProductsController extends Controller
                 ['id' => 'bloqueado', 'label' => 'Bloqueado'],
             ],
             'produto_tipos' => [
-                ['id' => 'mercadoria', 'label' => 'Mercadoria'],
-                ['id' => 'servico', 'label' => 'Serviço'],
-                ['id' => 'composto', 'label' => 'Composto'],
+                ['id' => 'NORMAL', 'label' => self::PRODUTO_TIPOS['NORMAL']],
+                ['id' => 'BASICO', 'label' => self::PRODUTO_TIPOS['BASICO']],
+                ['id' => 'COMPOSTO', 'label' => self::PRODUTO_TIPOS['COMPOSTO']],
+                ['id' => 'SERVICO', 'label' => self::PRODUTO_TIPOS['SERVICO']],
             ],
+            'tipo_item_options' => $this->optionRows(self::TIPO_ITEM_OPTIONS),
+            'natureza_item_options' => $this->optionRows(self::NATUREZA_ITEM_OPTIONS),
+            'origem_mercadoria_options' => [
+                ['id' => '0', 'label' => '0 - Nacional'],
+                ['id' => '1', 'label' => '1 - Estrangeira, importação direta'],
+                ['id' => '2', 'label' => '2 - Estrangeira, adquirida no mercado interno'],
+                ['id' => '3', 'label' => '3 - Nacional, conteúdo importado superior a 40%'],
+                ['id' => '4', 'label' => '4 - Nacional, processo produtivo básico'],
+                ['id' => '5', 'label' => '5 - Nacional, conteúdo importado inferior ou igual a 40%'],
+                ['id' => '6', 'label' => '6 - Estrangeira direta, sem similar nacional'],
+                ['id' => '7', 'label' => '7 - Estrangeira interna, sem similar nacional'],
+                ['id' => '8', 'label' => '8 - Nacional, conteúdo importado superior a 70%'],
+            ],
+            'fiscal_tag_options' => $this->optionRows(self::FISCAL_TAG_OPTIONS),
         ]);
     }
 
@@ -297,6 +372,22 @@ class CatalogProductsController extends Controller
             'marca' => ['nullable', 'string', 'max:50'],
             'palavra_chave' => ['nullable', 'string', 'max:100'],
             'permite_fracionamento' => ['sometimes', 'boolean'],
+            'tipo_item' => ['nullable', 'string', 'max:2'],
+            'natureza_item' => ['nullable', 'string', 'max:40'],
+            'ncm' => ['nullable', 'string', 'max:20'],
+            'ncm_descricao' => ['nullable', 'string', 'max:120'],
+            'cest' => ['nullable', 'string', 'max:20'],
+            'origem_mercadoria' => ['nullable'],
+            'servico_codigo' => ['nullable', 'string', 'max:20'],
+            'codigo_nbs' => ['nullable', 'string', 'max:20'],
+            'cod_classe_tributo' => ['nullable', 'string', 'max:20'],
+            'ipi_classe' => ['nullable', 'string', 'max:20'],
+            'ipi_cod_enquadramento' => ['nullable', 'string', 'max:20'],
+            'ipi_selo_cod' => ['nullable', 'string', 'max:20'],
+            'cod_iat' => ['nullable', 'string', 'max:20'],
+            'cod_ippt' => ['nullable', 'string', 'max:20'],
+            'fiscal_tags' => ['nullable', 'array'],
+            'fiscal_tags.*' => ['string', 'max:60'],
             'atributos_logisticos' => ['nullable', 'array'],
             'atributos_logisticos.fiscal_ncm' => ['nullable', 'string', 'max:20'],
             'atributos_logisticos.fiscal_ncm_ex' => ['nullable', 'string', 'max:20'],
@@ -551,19 +642,200 @@ class CatalogProductsController extends Controller
         $this->syncPrecos($produto, $payload['precos'] ?? []);
         $this->syncCodigosBarras($produto, $payload['codigos_barras'] ?? []);
         $this->syncEstoque($produto, $payload['estoque'] ?? null);
+        $this->syncFiscalTags($produto, $payload['fiscal_tags'] ?? []);
     }
 
     private function normalizeFiscalPayload(array $payload): array
     {
-        if (! array_key_exists('atributos_logisticos', $payload) || ! is_array($payload['atributos_logisticos'])) {
-            return $payload;
-        }
+        $payload['atributos_logisticos'] = is_array($payload['atributos_logisticos'] ?? null)
+            ? $payload['atributos_logisticos']
+            : [];
 
         $payload['atributos_logisticos']['fiscal_ncm'] = $this->digitsOrNull(
             $payload['atributos_logisticos']['fiscal_ncm'] ?? null,
         );
 
+        $payload['atributos_logisticos']['fiscal_ncm_ex'] = $this->digitsOrNull(
+            $payload['atributos_logisticos']['fiscal_ncm_ex'] ?? null,
+        );
+        $payload['atributos_logisticos']['fiscal_cest'] = $this->digitsOrNull(
+            $payload['atributos_logisticos']['fiscal_cest'] ?? null,
+        );
+
+        $payload['produto_tipo'] = $this->normalizeProdutoTipo($payload['produto_tipo'] ?? null);
+        $payload['tipo_item'] = $this->normalizeTipoItem($payload['tipo_item'] ?? null);
+        $payload['natureza_item'] = $this->normalizeNaturezaItem($payload['natureza_item'] ?? null);
+        $payload['ncm'] = $this->digitsOrNull($payload['ncm'] ?? $payload['atributos_logisticos']['fiscal_ncm'] ?? null);
+        $payload['cest'] = $this->digitsOrNull($payload['cest'] ?? $payload['atributos_logisticos']['fiscal_cest'] ?? null);
+        $payload['origem_mercadoria'] = $this->normalizeOrigemMercadoria(
+            $payload['origem_mercadoria'] ?? $payload['atributos_logisticos']['fiscal_origem'] ?? null,
+        );
+        $payload['ncm_descricao'] = $this->nullableTrim($payload['ncm_descricao'] ?? null);
+        $payload['servico_codigo'] = $this->nullableTrim($payload['servico_codigo'] ?? null);
+        $payload['codigo_nbs'] = $this->nullableTrim($payload['codigo_nbs'] ?? null);
+        $payload['cod_classe_tributo'] = $this->nullableTrim(
+            $payload['cod_classe_tributo'] ?? $payload['atributos_logisticos']['fiscal_tax_classification_code'] ?? null,
+        );
+
+        foreach (['ipi_classe', 'ipi_cod_enquadramento', 'ipi_selo_cod', 'cod_iat', 'cod_ippt'] as $field) {
+            $payload[$field] = $this->nullableTrim($payload[$field] ?? null);
+        }
+
+        $fiscalTags = $this->normalizeFiscalTags($payload['fiscal_tags'] ?? []);
+        $isService = $this->payloadIsService($payload);
+
+        if ($isService) {
+            $payload['produto_tipo'] = 'SERVICO';
+            $payload['tipo_item'] = '09';
+            $payload['natureza_item'] = 'SERVICO';
+            $payload['ncm'] = null;
+            $payload['ncm_descricao'] = null;
+            $payload['cest'] = null;
+            $payload['origem_mercadoria'] = null;
+            foreach (['ipi_classe', 'ipi_cod_enquadramento', 'ipi_selo_cod', 'cod_iat', 'cod_ippt'] as $field) {
+                $payload[$field] = null;
+            }
+            $fiscalTags[] = 'SERVICO_ISS';
+            $payload['atributos_logisticos'] = $this->serviceSafeLogistics($payload['atributos_logisticos']);
+        } else {
+            $payload['produto_tipo'] ??= 'NORMAL';
+            $payload['tipo_item'] ??= '00';
+            $payload['natureza_item'] ??= 'MERCADORIA';
+            $payload['servico_codigo'] = null;
+            $payload['codigo_nbs'] = null;
+            $fiscalTags = array_values(array_filter($fiscalTags, static fn (string $tag): bool => $tag !== 'SERVICO_ISS'));
+        }
+
+        $payload['fiscal_tags'] = array_values(array_unique($fiscalTags));
+
+        $errors = [];
+        if ($isService && blank($payload['servico_codigo'])) {
+            $errors['servico_codigo'] = ['Informe o código de serviço para itens de serviço.'];
+        }
+        if (! $isService && filled($payload['ncm'] ?? null) && strlen((string) $payload['ncm']) !== 8) {
+            $errors['ncm'] = ['Informe um NCM válido com 8 dígitos.'];
+        }
+        if (
+            ! $isService
+            && filled($payload['cest'] ?? null)
+            && strlen((string) $payload['cest']) !== 7
+        ) {
+            $errors['cest'] = ['Informe um CEST válido com 7 dígitos.'];
+        }
+        if (
+            ! $isService
+            && $payload['origem_mercadoria'] !== null
+            && (! is_int($payload['origem_mercadoria']) || $payload['origem_mercadoria'] < 0 || $payload['origem_mercadoria'] > 8)
+        ) {
+            $errors['origem_mercadoria'] = ['Informe uma origem de mercadoria entre 0 e 8.'];
+        }
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
+
         return $payload;
+    }
+
+    private function normalizeProdutoTipo(mixed $value): ?string
+    {
+        $value = mb_strtoupper(trim((string) $value));
+
+        return match ($value) {
+            'SERVICO', 'SERVIÇO', 'SERVICE' => 'SERVICO',
+            'COMPOSTO', 'COMPOSITE' => 'COMPOSTO',
+            'BASICO', 'BÁSICO', 'BASIC' => 'BASICO',
+            'MERCADORIA', 'PRODUTO', 'PRODUCT', 'NORMAL' => 'NORMAL',
+            default => $value !== '' ? $value : null,
+        };
+    }
+
+    private function normalizeTipoItem(mixed $value): ?string
+    {
+        $digits = preg_replace('/\D+/', '', (string) $value);
+        if ($digits === '') {
+            return null;
+        }
+
+        return str_pad(substr($digits, -2), 2, '0', STR_PAD_LEFT);
+    }
+
+    private function normalizeNaturezaItem(mixed $value): ?string
+    {
+        $value = mb_strtoupper(trim((string) $value));
+
+        return match ($value) {
+            'SERVICO', 'SERVIÇO', 'SERVICE' => 'SERVICO',
+            'PRODUTO', 'PRODUCT' => 'PRODUTO',
+            'INSUMO' => 'INSUMO',
+            'PATRIMONIO', 'PATRIMÔNIO' => 'PATRIMONIO',
+            'EMBALAGEM' => 'EMBALAGEM',
+            'MATERIAL_CONSUMO', 'USO_CONSUMO' => 'MATERIAL_CONSUMO',
+            'MERCADORIA' => 'MERCADORIA',
+            default => $value !== '' ? $value : null,
+        };
+    }
+
+    private function normalizeOrigemMercadoria(mixed $value): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        $digits = preg_replace('/\D+/', '', (string) $value);
+        if ($digits === '') {
+            return null;
+        }
+
+        return (int) substr($digits, 0, 1);
+    }
+
+    private function normalizeFiscalTags(mixed $tags): array
+    {
+        return collect(is_array($tags) ? $tags : [])
+            ->map(fn ($tag): string => mb_strtoupper(trim((string) $tag)))
+            ->filter(fn (string $tag): bool => array_key_exists($tag, self::FISCAL_TAG_OPTIONS))
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    private function payloadIsService(array $payload): bool
+    {
+        return ($payload['produto_tipo'] ?? null) === 'SERVICO'
+            || ($payload['tipo_item'] ?? null) === '09'
+            || ($payload['natureza_item'] ?? null) === 'SERVICO';
+    }
+
+    private function serviceSafeLogistics(array $attributes): array
+    {
+        foreach ([
+            'controla_lote',
+            'controla_validade',
+            'controla_enderecamento',
+            'fragil',
+            'refrigerado',
+            'inflamavel',
+            'empilhavel',
+            'pesavel',
+            'toxico',
+            'corrosivo',
+            'ecommerce',
+            'e_commerce',
+            'agronomico',
+            'transgenico',
+        ] as $flag) {
+            if (array_key_exists($flag, $attributes)) {
+                $attributes[$flag] = false;
+            }
+        }
+
+        if (is_array($attributes['estoque_detalhado']['atributos_logisticos_flags'] ?? null)) {
+            foreach ($attributes['estoque_detalhado']['atributos_logisticos_flags'] as $flag => $_) {
+                $attributes['estoque_detalhado']['atributos_logisticos_flags'][$flag] = false;
+            }
+        }
+
+        return $attributes;
     }
 
     private function digitsOrNull(mixed $value): ?string
@@ -728,6 +1000,26 @@ class CatalogProductsController extends Controller
         $record->save();
     }
 
+    private function syncFiscalTags(Produto $produto, array $tags): void
+    {
+        $normalizedTags = $this->normalizeFiscalTags($tags);
+        $keptIds = [];
+
+        foreach ($normalizedTags as $tag) {
+            $record = ProductFiscalTag::query()->firstOrNew([
+                'produto_id' => $produto->id,
+                'tag' => $tag,
+            ]);
+            $record->save();
+            $keptIds[] = $record->id;
+        }
+
+        ProductFiscalTag::query()
+            ->where('produto_id', $produto->id)
+            ->when(count($keptIds), fn ($query) => $query->whereNotIn('id', $keptIds))
+            ->delete();
+    }
+
     private function registerAudit(Request $request, Produto $produto, string $event, array $changes): void
     {
         ProdutoAuditoria::query()->create([
@@ -742,13 +1034,39 @@ class CatalogProductsController extends Controller
         ]);
     }
 
+    private function nullableTrim(mixed $value): ?string
+    {
+        $normalized = trim((string) $value);
+        return $normalized !== '' ? $normalized : null;
+    }
+
+    private function optionRows(array $options): array
+    {
+        return collect($options)
+            ->map(fn (string $label, string $id): array => ['id' => $id, 'label' => $label])
+            ->values()
+            ->all();
+    }
+
     private function serializeProduto(?Produto $produto): ?array
     {
         if (! $produto) {
             return null;
         }
 
-        $produto->loadMissing(['unidadeMedida:id,unidade,decimais', 'precos', 'codigosBarras', 'estoque', 'auditorias.user:id,name']);
+        $produto->loadMissing([
+            'unidadeMedida:id,unidade,decimais',
+            'precos',
+            'codigosBarras',
+            'estoque',
+            'fiscalTags',
+            'fiscalItemProfile',
+            'fiscalItemProfileSaida',
+            'classificacaoMercadologica',
+            'auditorias.user:id,name',
+        ]);
+
+        $fiscalBase = $this->resolveFiscalBase($produto);
 
         return [
             'id' => $produto->id,
@@ -771,6 +1089,22 @@ class CatalogProductsController extends Controller
             'marca' => $produto->marca,
             'palavra_chave' => $produto->palavra_chave,
             'permite_fracionamento' => (bool) $produto->permite_fracionamento,
+            'tipo_item' => $produto->tipo_item,
+            'natureza_item' => $produto->natureza_item,
+            'ncm' => $produto->ncm,
+            'ncm_descricao' => $produto->ncm_descricao,
+            'cest' => $produto->cest,
+            'origem_mercadoria' => $produto->origem_mercadoria,
+            'servico_codigo' => $produto->servico_codigo,
+            'codigo_nbs' => $produto->codigo_nbs,
+            'cod_classe_tributo' => $produto->cod_classe_tributo,
+            'ipi_classe' => $produto->ipi_classe,
+            'ipi_cod_enquadramento' => $produto->ipi_cod_enquadramento,
+            'ipi_selo_cod' => $produto->ipi_selo_cod,
+            'cod_iat' => $produto->cod_iat,
+            'cod_ippt' => $produto->cod_ippt,
+            'fiscal_tags' => $produto->fiscalTags->pluck('tag')->values()->all(),
+            'fiscal_base' => $fiscalBase,
             'atributos_logisticos' => $produto->atributos_logisticos,
             'precos' => $produto->precos->map(fn (ProdutoPreco $preco) => [
                 'id' => $preco->id,
@@ -815,6 +1149,96 @@ class CatalogProductsController extends Controller
             'created_at' => $produto->created_at?->toIso8601String(),
             'updated_at' => $produto->updated_at?->toIso8601String(),
         ];
+    }
+
+    private function resolveFiscalBase(Produto $produto): array
+    {
+        $attributes = is_array($produto->atributos_logisticos) ? $produto->atributos_logisticos : [];
+        $profile = $produto->fiscalItemProfileSaida ?: $produto->fiscalItemProfile;
+        $classificationDefaults = $this->classificationFiscalDefaults($produto->classificacaoMercadologica);
+
+        $produtoTipo = $this->normalizeProdutoTipo($produto->produto_tipo) ?: 'NORMAL';
+        $tipoItem = $this->normalizeTipoItem($produto->tipo_item);
+        if ($tipoItem === null || $tipoItem === '00') {
+            $tipoItem = $classificationDefaults['tipo_item'] ?: ($produtoTipo === 'SERVICO' ? '09' : ($tipoItem ?: '00'));
+        }
+
+        $naturezaItem = $this->normalizeNaturezaItem($produto->natureza_item);
+        if ($naturezaItem === null || $naturezaItem === 'MERCADORIA') {
+            $naturezaItem = $classificationDefaults['natureza_item'] ?: ($produtoTipo === 'SERVICO' ? 'SERVICO' : ($naturezaItem ?: 'MERCADORIA'));
+        }
+
+        $tags = array_values(array_unique(array_merge(
+            $classificationDefaults['fiscal_tags'],
+            $produto->fiscalTags->pluck('tag')->values()->all(),
+        )));
+
+        $isService = $produtoTipo === 'SERVICO' || $tipoItem === '09' || $naturezaItem === 'SERVICO';
+        if ($isService && ! in_array('SERVICO_ISS', $tags, true)) {
+            $tags[] = 'SERVICO_ISS';
+        }
+
+        return [
+            'tipo_item' => $isService ? '09' : $tipoItem,
+            'natureza_item' => $isService ? 'SERVICO' : $naturezaItem,
+            'fiscal_tags' => $tags,
+            'item_type' => $isService ? 'SERVICE' : 'PRODUCT',
+            'ncm' => $isService ? null : $this->digitsOrNull($this->firstNonBlank($produto->ncm, $profile?->ncm, data_get($attributes, 'fiscal_ncm'))),
+            'ncm_descricao' => $isService ? null : $this->firstNonBlank($produto->ncm_descricao, $profile?->ncm_descricao),
+            'cest' => $isService ? null : $this->digitsOrNull($this->firstNonBlank($produto->cest, $profile?->cest, data_get($attributes, 'fiscal_cest'))),
+            'origem_mercadoria' => $isService ? null : $this->normalizeOrigemMercadoria($this->firstNonBlank($produto->origem_mercadoria, $profile?->origem_mercadoria, data_get($attributes, 'fiscal_origem'))),
+            'servico_codigo' => $isService ? $this->firstNonBlank($produto->servico_codigo, $profile?->servico_codigo) : null,
+            'codigo_nbs' => $isService ? $produto->codigo_nbs : null,
+            'cod_classe_tributo' => $this->firstNonBlank($produto->cod_classe_tributo, $profile?->cod_classe_tributo, data_get($attributes, 'fiscal_tax_classification_code')),
+        ];
+    }
+
+    private function classificationFiscalDefaults(?ProdutoClassificacaoMercadologica $classification): array
+    {
+        $defaults = [
+            'tipo_item' => null,
+            'natureza_item' => null,
+            'fiscal_tags' => [],
+        ];
+        $visited = [];
+
+        while ($classification && ! in_array((string) $classification->id, $visited, true)) {
+            $visited[] = (string) $classification->id;
+
+            $tipoItem = $this->normalizeTipoItem($classification->tipo_item_default ?? null);
+            $naturezaItem = $this->normalizeNaturezaItem($classification->natureza_item_default ?? null);
+
+            if ($defaults['tipo_item'] === null && $tipoItem !== null) {
+                $defaults['tipo_item'] = $tipoItem;
+            }
+            if ($defaults['natureza_item'] === null && $naturezaItem !== null) {
+                $defaults['natureza_item'] = $naturezaItem;
+            }
+            $defaults['fiscal_tags'] = array_values(array_unique(array_merge(
+                $defaults['fiscal_tags'],
+                $this->normalizeFiscalTags($classification->fiscal_tags_default ?? []),
+            )));
+
+            $parentId = $classification->parent_id;
+            $classification = $parentId ? ProdutoClassificacaoMercadologica::query()->find($parentId) : null;
+        }
+
+        return $defaults;
+    }
+
+    private function firstNonBlank(mixed ...$values): mixed
+    {
+        foreach ($values as $value) {
+            if ($value === null) {
+                continue;
+            }
+
+            if (trim((string) $value) !== '') {
+                return $value;
+            }
+        }
+
+        return null;
     }
 
     private function valuesAreDifferent(mixed $before, mixed $after): bool

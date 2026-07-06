@@ -858,7 +858,7 @@ onMounted(() => {
                         <AppInput
                             v-model="fiscal.notagil_base_url"
                             label="URL base da API NotaAgil"
-                            placeholder="https://api.notagil.com.br/api/v1/integrations"
+                            placeholder="https://notagil_api.vora-sys.com/api/v2/integrations"
                             hint="Informe a URL do ambiente NotaAgil usado para emissão."
                         />
                         <AppInput
@@ -869,9 +869,6 @@ onMounted(() => {
                             :placeholder="fiscal.notagil_token_configured ? 'Token já configurado' : 'Informe o token da API'"
                             hint="Deixe em branco para manter o token atual."
                         />
-                        <AppInput v-model="fiscal.notagil_company_id" label="Company ID NotaAgil" placeholder="Obrigatório para emissão via NotaAgil" />
-                        <AppInput v-model="fiscal.notagil_operation_code_nfce" label="Operation code NFC-e" placeholder="Ex.: VENDA_BALCAO_NFCE" />
-                        <AppInput v-model="fiscal.notagil_operation_code_nfe" label="Operation code NF-e" placeholder="Ex.: VENDA_FATURAMENTO_NFE" />
                     </div>
 
                     <div class="fiscal-toggle-card">

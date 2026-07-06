@@ -15,9 +15,11 @@ class DigitalCertificate extends Model
 
     protected $fillable = [
         'tipo', 'validade', 'arquivo_nome', 'senha_hash',
+        'pfx_storage_path', 'pfx_password_encrypted', 'pfx_uploaded_at',
     ];
 
     protected $casts = [
         'validade' => 'date',
+        'pfx_uploaded_at' => 'datetime',
     ];
 }

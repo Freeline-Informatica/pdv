@@ -9,8 +9,8 @@ use Freeline\Pdv\Models\Produto;
 use Freeline\Pdv\Models\Sale;
 use Freeline\Pdv\Models\SaleFiscalDocument;
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
 use NotaAgil\Integration\NotaAgilApiException;
 use NotaAgil\Integration\NotaAgilClient;
 use Throwable;
@@ -59,26 +59,26 @@ class NotaAgilFiscalService
 
         $payload = array_filter([
             'url' => $url,
-            'description' => 'PDV Freeline - atualização fiscal',
-            'status' => 'active',
-            'environment' => $config->ambiente ?: null,
-            'events' => self::WEBHOOK_EVENTS,
+            'descricao' => 'PDV Freeline - atualização fiscal',
+            'situacao' => 'ativo',
+            'ambiente' => $this->notagilEnvironment($config, allowAll: true),
+            'eventos' => self::WEBHOOK_EVENTS,
         ], static fn ($value): bool => $value !== null && $value !== '');
 
         $webhookId = trim((string) ($config->notagil_webhook_id ?? ''));
         $client = $this->client($config);
         if ($webhookId !== '') {
             try {
-                $response = $client->updateWebhook($webhookId, $payload);
+                $response = $client->updateWebhookV2($webhookId, $payload);
             } catch (NotaAgilApiException $exception) {
                 if ($exception->statusCode !== 404) {
                     throw $exception;
                 }
 
-                $response = $client->createWebhook($payload);
+                $response = $client->createWebhookV2($payload);
             }
         } else {
-            $response = $client->createWebhook($payload);
+            $response = $client->createWebhookV2($payload);
         }
 
         return $this->normalizeWebhookResponse($response, $payload);
@@ -96,7 +96,7 @@ class NotaAgilFiscalService
         }
 
         try {
-            $response = $this->client($config)->rotateWebhookSecret($webhookId);
+            $response = $this->client($config)->rotateWebhookSecretV2($webhookId);
         } catch (NotaAgilApiException $exception) {
             if ($exception->statusCode === 404) {
                 throw new NotaAgilConfigurationException('Webhook NotaAgil não encontrado. Sincronize o webhook antes de rotacionar o segredo.');
@@ -108,9 +108,9 @@ class NotaAgilFiscalService
         return $this->normalizeWebhookResponse($response, [
             'id' => $webhookId,
             'url' => $config->notagil_webhook_url,
-            'status' => $config->notagil_webhook_status ?: 'active',
-            'environment' => $config->ambiente ?: null,
-            'events' => self::WEBHOOK_EVENTS,
+            'situacao' => $config->notagil_webhook_status ?: 'ativo',
+            'ambiente' => $this->notagilEnvironment($config, allowAll: true),
+            'eventos' => self::WEBHOOK_EVENTS,
         ]);
     }
 
@@ -130,7 +130,10 @@ class NotaAgilFiscalService
             throw new NotaAgilConfigurationException('Configure o token NotaAgil antes de consultar NCMs.');
         }
 
-        return $this->client($config)->ncms($filters, $this->requireCompanyId($config));
+        return $this->client($config)->ncmsV2(array_filter([
+            'busca' => $filters['busca'] ?? $filters['search'] ?? $filters['q'] ?? null,
+            'limite' => $filters['limite'] ?? $filters['limit'] ?? null,
+        ], static fn ($value): bool => $value !== null && $value !== ''));
     }
 
     public function makeFiscalDocument(Sale $sale, FiscalConfig $config, string $series, string $operationCode): SaleFiscalDocument
@@ -182,12 +185,23 @@ class NotaAgilFiscalService
         $startedAt = microtime(true);
         $config ??= FiscalConfig::query()->first();
 
-        if ($config && $document->sale_id && ! $this->payloadHasIbptAttempt($document->request_payload ?? [])) {
+        $currentPayload = $document->request_payload ?? [];
+        if ($config && $document->sale_id && ! $this->isOperationDocumentV2Payload($currentPayload)) {
             $sale = $document->sale()->first();
             if ($sale) {
                 $document->request_payload = $this->buildSalePayload($sale, $document, $config);
             }
         }
+
+        $payload = $document->request_payload ?? [];
+        if ($this->isOperationDocumentV2Payload($payload)) {
+            $payload = $this->operationPayload($payload, $this->operationPayloadIsSynchronous($payload, $document, $config));
+            $document->request_payload = $payload;
+        } elseif (is_array(data_get($payload, 'snapshot')) || is_array(data_get($payload, 'payload'))) {
+            $payload = $this->operationPayload($payload, $this->operationPayloadIsSynchronous($payload, $document, $config));
+            $document->request_payload = $payload;
+        }
+        $this->assertOperationDocumentCanBeIssued($payload, $document);
 
         $document->forceFill([
             'status' => SaleFiscalDocument::STATUS_PROCESSING,
@@ -196,23 +210,14 @@ class NotaAgilFiscalService
             'last_error' => null,
         ])->save();
 
-        $companyId = $this->requireCompanyId($config);
-        $payload = $document->request_payload ?? [];
-
         $createStartedAt = microtime(true);
         $client = $this->client($config);
-        $synchronousNfce = $this->shouldSubmitSynchronously($document, $config);
-        $response = $client->createDocumentByOperation(
-            $companyId,
-            (string) $document->operation_code,
-            $this->operationPayload($payload, $synchronousNfce),
-            $document->idempotency_key,
-        );
+        $response = $client->createDocumentByOperationV2((string) $document->operation_code, $payload, $document->idempotency_key);
 
         $response = $this->withDebug($response, [
             'submit_attempt' => (int) $document->attempts,
             'create_ms' => $this->elapsedMs($createStartedAt),
-            'synchronous_operation' => $synchronousNfce,
+            'synchronous_operation' => data_get($payload, 'modo_emissao') === 'sincrono',
         ]);
         $document = $this->applyRemoteResponse($document, $response);
 
@@ -221,41 +226,327 @@ class NotaAgilFiscalService
         ]);
     }
 
-    private function shouldSubmitSynchronously(SaleFiscalDocument $document, ?FiscalConfig $config): bool
+    private function isOperationDocumentV2Payload(array $payload): bool
     {
-        return (bool) ($config?->notagil_nfce_synchronous ?? false)
-            && mb_strtolower((string) $document->document_type) === 'nfce';
+        return data_get($payload, 'tipo_documento') !== null
+            && is_array(data_get($payload, 'retrato'));
+    }
+
+    private function assertOperationDocumentCanBeIssued(array $payload, SaleFiscalDocument $document): void
+    {
+        $operationCode = trim((string) $document->operation_code);
+        if ($operationCode === '' || $operationCode === 'direto') {
+            $label = mb_strtolower((string) $document->document_type) === 'nfe' ? 'NF-e' : 'NFC-e';
+            throw new NotaAgilConfigurationException("Operation code NotaAgil ausente para {$label}. Configure o código técnico da operação fiscal antes de emitir por operação v2.");
+        }
+
+        if (! $this->isOperationDocumentV2Payload($payload)) {
+            throw new NotaAgilConfigurationException('Payload fiscal NotaAgil V2 por operação inválido. Recrie o documento fiscal antes de emitir.');
+        }
+
+        $items = data_get($payload, 'retrato.itens', []);
+        if (! is_array($items) || $items === []) {
+            throw new NotaAgilConfigurationException('Payload fiscal NotaAgil V2 por operação sem itens. Recrie o documento fiscal antes de emitir.');
+        }
+    }
+
+    private function operationPayloadIsSynchronous(array $payload, SaleFiscalDocument $document, ?FiscalConfig $config): bool
+    {
+        $synchronous = data_get($payload, 'sincrono');
+        if (is_bool($synchronous)) {
+            return $synchronous;
+        }
+
+        $mode = data_get($payload, 'modo_emissao');
+        if ($mode !== null) {
+            return mb_strtolower(trim((string) $mode)) === 'sincrono';
+        }
+
+        return $this->shouldSubmitSynchronouslyForType((string) $document->document_type, $config);
     }
 
     private function operationPayload(array $payload, bool $synchronous): array
     {
-        if (! $synchronous) {
-            return $payload;
+        $documentType = mb_strtolower(trim((string) (data_get($payload, 'tipo_documento') ?: data_get($payload, 'document_type'))));
+        $metadata = data_get($payload, 'metadados', data_get($payload, 'metadata'));
+        $snapshot = data_get($payload, 'retrato', data_get($payload, 'snapshot'));
+        $directPayload = data_get($payload, 'payload');
+        if (! is_array($snapshot) && is_array($directPayload)) {
+            $snapshot = $this->snapshotFromDirectPayload($directPayload, $payload);
+        }
+        if (is_array($snapshot)) {
+            $snapshot = $this->normalizeOperationSnapshot($snapshot);
         }
 
-        return array_filter([
-            ...$payload,
-            'emission_mode' => 'sync',
-            'synchronous' => true,
-        ], static fn ($value): bool => $value !== null && $value !== '');
+        return $this->filterBlank([
+            'external_id' => data_get($payload, 'external_id'),
+            'tipo_documento' => $documentType !== '' ? $documentType : null,
+            'municipio' => data_get($payload, 'municipio'),
+            'modo_emissao' => $synchronous ? 'sincrono' : 'fila',
+            'sincrono' => $synchronous,
+            'retrato' => is_array($snapshot) ? $snapshot : null,
+            'metadados' => is_array($metadata) ? $this->normalizeOperationMetadata($metadata) : null,
+        ]);
     }
 
-    private function payloadHasIbptAttempt(array $payload): bool
+    private function normalizeOperationMetadata(array $metadata): array
     {
-        return data_get($payload, 'metadata.ibpt') !== null
-            || data_get($payload, 'metadata.ibpt_message') !== null
-            || data_get($payload, 'metadata._debug.ibpt_error') !== null
-            || data_get($payload, 'metadata._debug.ibpt_skipped') !== null;
+        $knownKeys = [
+            'origin', 'origem',
+            'sale_id', 'venda_id',
+            'sale_number', 'numero_venda',
+            'operator_id', 'operador_id',
+            'payments', 'pagamentos',
+            'restaurant', 'restaurante',
+            'fiscal_observation', 'observacao_fiscal',
+            'ibpt_message', 'mensagem_ibpt',
+        ];
+        $extra = array_diff_key($metadata, array_flip($knownKeys));
+
+        return $this->filterBlank([
+            'origem' => data_get($metadata, 'origem', data_get($metadata, 'origin')),
+            'venda_id' => data_get($metadata, 'venda_id', data_get($metadata, 'sale_id')),
+            'numero_venda' => data_get($metadata, 'numero_venda', data_get($metadata, 'sale_number')),
+            'operador_id' => data_get($metadata, 'operador_id', data_get($metadata, 'operator_id')),
+            'observacao_fiscal' => data_get($metadata, 'observacao_fiscal', data_get($metadata, 'fiscal_observation')),
+            'mensagem_ibpt' => data_get($metadata, 'mensagem_ibpt', data_get($metadata, 'ibpt_message')),
+            'pagamentos' => $this->normalizeOperationPayments(data_get($metadata, 'pagamentos', data_get($metadata, 'payments', []))),
+            'restaurante' => data_get($metadata, 'restaurante', data_get($metadata, 'restaurant')),
+            ...$extra,
+        ]);
+    }
+
+    private function normalizeOperationPayments(mixed $payments): ?array
+    {
+        if (! is_array($payments) || $payments === []) {
+            return null;
+        }
+
+        $normalized = [];
+        foreach ($payments as $payment) {
+            if (! is_array($payment)) {
+                continue;
+            }
+
+            $normalized[] = $this->filterBlank([
+                'meio' => data_get($payment, 'meio', data_get($payment, 'method_name')),
+                'descricao' => data_get($payment, 'descricao', data_get($payment, 'description')),
+                'valor' => data_get($payment, 'valor', data_get($payment, 'amount')),
+                'intermediador_cnpj' => data_get($payment, 'intermediador_cnpj', data_get($payment, 'intermediator_cnpj')),
+                'identificador_estabelecimento' => data_get($payment, 'identificador_estabelecimento', data_get($payment, 'establishment_identifier')),
+                'tipo_documento_paf' => data_get($payment, 'tipo_documento_paf', data_get($payment, 'paf_document_type_code')),
+            ]);
+        }
+
+        return $normalized !== [] ? $normalized : null;
+    }
+
+    private function normalizeOperationSnapshot(array $snapshot): array
+    {
+        $documentData = data_get($snapshot, 'dados_documento', data_get($snapshot, 'document_data', []));
+        $counterparty = data_get($snapshot, 'tomador', data_get($snapshot, 'contraparte', data_get($snapshot, 'counterparty', [])));
+        $items = data_get($snapshot, 'itens', data_get($snapshot, 'items', []));
+
+        return $this->filterBlank([
+            'ambiente_fiscal' => data_get($snapshot, 'ambiente_fiscal', data_get($snapshot, 'fiscal_environment')),
+            'direcao_documento' => data_get($snapshot, 'direcao_documento', data_get($snapshot, 'document_direction')),
+            'data_referencia' => data_get($snapshot, 'data_referencia', data_get($snapshot, 'reference_date')),
+            'dados_documento' => is_array($documentData) ? $documentData : null,
+            'tomador' => $this->normalizeOperationCounterparty($counterparty),
+            'referencias_documento' => data_get($snapshot, 'referencias_documento', data_get($snapshot, 'document_references', data_get($snapshot, 'referencias', []))),
+            'itens' => is_array($items) ? $this->normalizeOperationItems($items) : [],
+        ]);
+    }
+
+    private function normalizeOperationCounterparty(mixed $counterparty): array
+    {
+        if (! is_array($counterparty) || $counterparty === []) {
+            return [
+                'comprador_identificado' => false,
+                'consumidor_final' => true,
+                'indicador_ie' => '9',
+            ];
+        }
+
+        $document = trim((string) data_get($counterparty, 'documento', ''));
+        $buyerIdentified = data_get($counterparty, 'comprador_identificado', data_get($counterparty, 'buyer_identified'));
+
+        return $this->filterBlank([
+            'comprador_identificado' => $buyerIdentified !== null ? $buyerIdentified : $document !== '',
+            'consumidor_final' => data_get($counterparty, 'consumidor_final', data_get($counterparty, 'final_consumer', true)),
+            'indicador_ie' => data_get($counterparty, 'indicador_ie'),
+            'nome' => data_get($counterparty, 'nome'),
+            'documento' => $document,
+            'tipo_pessoa' => $this->normalizeOperationPersonType(data_get($counterparty, 'tipo_pessoa', data_get($counterparty, 'person_type'))),
+            'email' => data_get($counterparty, 'email'),
+            'telefone' => data_get($counterparty, 'telefone'),
+            'uf' => data_get($counterparty, 'uf'),
+            'municipio' => data_get($counterparty, 'municipio'),
+            'codigo_ibge' => data_get($counterparty, 'codigo_ibge'),
+            'cep' => data_get($counterparty, 'cep'),
+            'logradouro' => data_get($counterparty, 'logradouro'),
+            'numero' => data_get($counterparty, 'numero'),
+            'bairro' => data_get($counterparty, 'bairro'),
+            'complemento' => data_get($counterparty, 'complemento'),
+            'inscricao_estadual' => data_get($counterparty, 'inscricao_estadual'),
+            'codigo_pais' => data_get($counterparty, 'codigo_pais', data_get($counterparty, 'country_code')),
+        ]);
+    }
+
+    private function normalizeOperationPersonType(mixed $type): ?string
+    {
+        return match (mb_strtolower(trim((string) $type))) {
+            'pf', 'fisica', 'pessoa_fisica', 'pessoa fisica' => 'fisica',
+            'pj', 'juridica', 'pessoa_juridica', 'pessoa juridica' => 'juridica',
+            'estrangeiro', 'estrangeira' => 'estrangeiro',
+            default => null,
+        };
+    }
+
+    private function normalizeOperationItems(array $items): array
+    {
+        return array_values(array_filter(array_map(function (mixed $item): ?array {
+            return is_array($item) ? $this->normalizeOperationItem($item) : null;
+        }, $items)));
+    }
+
+    private function normalizeOperationItem(array $item): array
+    {
+        $productId = data_get($item, 'produto_id', data_get($item, 'product_id'));
+
+        return $this->filterBlank([
+            'produto_id' => is_numeric($productId) ? (int) $productId : null,
+            'produto_externo_id' => is_numeric($productId) ? null : $productId,
+            'codigo' => data_get($item, 'codigo', data_get($item, 'sku')),
+            'descricao' => data_get($item, 'descricao', data_get($item, 'description', 'Produto')),
+            'tipo_item' => $this->normalizeOperationItemType(data_get($item, 'tipo_item', data_get($item, 'item_type', 'produto'))),
+            'ncm' => data_get($item, 'ncm'),
+            'cest' => data_get($item, 'cest'),
+            'origem_codigo' => data_get($item, 'origem_codigo', data_get($item, 'origin_code', data_get($item, 'codigo_origem'))),
+            'codigo_servico' => data_get($item, 'codigo_servico', data_get($item, 'service_code')),
+            'codigo_nbs' => data_get($item, 'codigo_nbs'),
+            'tags_fiscais' => data_get($item, 'tags_fiscais', data_get($item, 'fiscal_tags')),
+            'codigo_classificacao_tributaria' => data_get($item, 'codigo_classificacao_tributaria', data_get($item, 'tax_classification_code')),
+            'unidade' => data_get($item, 'unidade', data_get($item, 'unit')),
+            'quantidade' => data_get($item, 'quantidade', data_get($item, 'quantity')),
+            'valor_unitario' => data_get($item, 'valor_unitario', data_get($item, 'unit_price')),
+            'valor_bruto' => data_get($item, 'valor_bruto', data_get($item, 'gross_amount')),
+            'valor_desconto' => data_get($item, 'valor_desconto', data_get($item, 'discount_amount')),
+            'valor_frete' => data_get($item, 'valor_frete', data_get($item, 'freight_amount')),
+            'valor_seguro' => data_get($item, 'valor_seguro', data_get($item, 'insurance_amount')),
+            'valor_outras_despesas' => data_get($item, 'valor_outras_despesas', data_get($item, 'other_amount', data_get($item, 'outros_valores'))),
+        ]);
+    }
+
+    private function normalizeOperationItemType(mixed $type): ?string
+    {
+        return match (mb_strtolower(trim((string) $type))) {
+            'product', 'produto', 'mercadoria' => 'produto',
+            'service', 'servico', 'serviço' => 'servico',
+            default => null,
+        };
+    }
+
+    /**
+     * @param  array<string, mixed>  $directPayload
+     * @param  array<string, mixed>  $envelope
+     * @return array<string, mixed>
+     */
+    private function snapshotFromDirectPayload(array $directPayload, array $envelope): array
+    {
+        $identification = data_get($directPayload, 'identificacao', []);
+        $items = data_get($directPayload, 'itens', []);
+
+        return $this->filterBlank([
+            'ambiente_fiscal' => data_get($identification, 'ambiente', data_get($envelope, 'ambiente_fiscal')),
+            'direcao_documento' => 'saida',
+            'data_referencia' => data_get($identification, 'data_emissao'),
+            'dados_documento' => $this->filterBlank([
+                'serie' => data_get($identification, 'serie'),
+                'numero' => data_get($identification, 'numero'),
+                'data_emissao' => data_get($identification, 'data_emissao'),
+                'natureza_operacao' => data_get($identification, 'natureza_operacao'),
+                'valor_total' => data_get($directPayload, 'totais.valor_documento'),
+            ]),
+            'tomador' => $this->counterpartyFromCanonicalParty(data_get($directPayload, 'tomador', [])),
+            'referencias_documento' => [],
+            'itens' => is_array($items) ? $this->itemsFromCanonicalPayload($items) : [],
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function counterpartyFromCanonicalParty(mixed $party): array
+    {
+        if (! is_array($party) || $party === []) {
+            return [
+                'comprador_identificado' => false,
+                'consumidor_final' => true,
+                'indicador_ie' => '9',
+            ];
+        }
+
+        $document = $this->digitsOrNull(data_get($party, 'cpf_cnpj'));
+
+        return $this->filterBlank([
+            'comprador_identificado' => $document !== null,
+            'consumidor_final' => true,
+            'indicador_ie' => '9',
+            'nome' => data_get($party, 'razao_social'),
+            'documento' => $document,
+            'tipo_pessoa' => $this->normalizeOperationPersonType(data_get($party, 'tipo_pessoa')),
+            'inscricao_estadual' => data_get($party, 'inscricao_estadual'),
+            'email' => data_get($party, 'email'),
+            'telefone' => data_get($party, 'telefone'),
+            'logradouro' => data_get($party, 'endereco.logradouro'),
+            'numero' => data_get($party, 'endereco.numero'),
+            'complemento' => data_get($party, 'endereco.complemento'),
+            'bairro' => data_get($party, 'endereco.bairro'),
+            'municipio' => data_get($party, 'endereco.municipio'),
+            'uf' => data_get($party, 'endereco.uf'),
+            'cep' => data_get($party, 'endereco.cep'),
+            'codigo_ibge' => data_get($party, 'endereco.codigo_ibge', data_get($party, 'endereco.codigo_municipio')),
+        ]);
+    }
+
+    /**
+     * @param  array<int, mixed>  $items
+     * @return array<int, array<string, mixed>>
+     */
+    private function itemsFromCanonicalPayload(array $items): array
+    {
+        return array_values(array_filter(array_map(function (mixed $item): ?array {
+            if (! is_array($item)) {
+                return null;
+            }
+
+            return $this->filterBlank([
+                'codigo' => data_get($item, 'codigo'),
+                'descricao' => data_get($item, 'descricao', 'Produto'),
+                'tipo_item' => $this->normalizeOperationItemType(data_get($item, 'tipo_item', 'produto')),
+                'origem_codigo' => data_get($item, 'origem_codigo', data_get($item, 'codigo_origem')),
+                'quantidade' => data_get($item, 'quantidade'),
+                'valor_unitario' => data_get($item, 'valor_unitario'),
+                'valor_bruto' => data_get($item, 'valor_total'),
+                'valor_desconto' => data_get($item, 'valor_desconto'),
+                'valor_frete' => data_get($item, 'valor_frete'),
+                'valor_seguro' => data_get($item, 'valor_seguro'),
+                'valor_outras_despesas' => data_get($item, 'valor_outras_despesas', data_get($item, 'outros_valores')),
+                'unidade' => data_get($item, 'unidade'),
+                'ncm' => data_get($item, 'ncm'),
+                'cfop' => data_get($item, 'cfop'),
+            ]);
+        }, $items)));
     }
 
     public function sync(SaleFiscalDocument $document, ?FiscalConfig $config = null, ?int $timeoutSeconds = null, array $debug = []): SaleFiscalDocument
     {
         $startedAt = microtime(true);
         $client = $this->client($config);
-        $companyId = $this->requireCompanyId($config);
         $response = $timeoutSeconds === null
-            ? $client->document($document->external_id, $companyId)
-            : $client->waitDocument($document->external_id, $companyId, $timeoutSeconds);
+            ? $client->documentV2($document->external_id)
+            : $client->waitDocumentV2($document->external_id, $timeoutSeconds);
 
         return $this->applyRemoteResponse($document, $this->withDebug($response, $debug + [
             'sync_ms' => $this->elapsedMs($startedAt),
@@ -270,7 +561,6 @@ class NotaAgilFiscalService
         }
 
         $client = $this->client($config);
-        $companyId = $this->requireCompanyId($config);
         $startedAt = microtime(true);
         $deadline = microtime(true) + max(1, $timeoutSeconds);
         $polls = 0;
@@ -281,7 +571,7 @@ class NotaAgilFiscalService
 
             $document = $this->applyRemoteResponse(
                 $document,
-                $this->withDebug($client->document($document->external_id, $companyId), [
+                $this->withDebug($client->documentV2($document->external_id), [
                     'artifact_poll_count' => $polls,
                     'artifact_wait_ms' => $this->elapsedMs($startedAt),
                     'artifact_wait_timeout_s' => $timeoutSeconds,
@@ -329,7 +619,7 @@ class NotaAgilFiscalService
 
     public function cancel(SaleFiscalDocument $document, string $reason, ?FiscalConfig $config = null): SaleFiscalDocument
     {
-        $response = $this->client($config)->cancelDocument($document->external_id, $reason, $this->requireCompanyId($config));
+        $response = $this->client($config)->cancelDocumentV2($document->external_id, $reason);
 
         $document = $this->applyRemoteResponse($document, $response);
         $document->forceFill([
@@ -341,9 +631,13 @@ class NotaAgilFiscalService
 
     public function download(SaleFiscalDocument $document, string $artifact, ?FiscalConfig $config = null): array
     {
+        $filters = array_filter([
+            'ambiente_fiscal' => $document->environment ?: $this->notagilEnvironment($config),
+        ], static fn ($value): bool => $value !== null && $value !== '');
+
         return $artifact === 'xml'
-            ? $this->client($config)->downloadDocumentXml($document->external_id, $this->requireCompanyId($config))
-            : $this->client($config)->downloadDocumentPdf($document->external_id, $this->requireCompanyId($config));
+            ? $this->client($config)->downloadDocumentXmlV2($document->external_id, $filters)
+            : $this->client($config)->downloadDocumentPdfV2($document->external_id, $filters);
     }
 
     public function applyWebhookPayload(array $payload, ?string $externalId = null, array $debug = []): ?SaleFiscalDocument
@@ -390,7 +684,10 @@ class NotaAgilFiscalService
     {
         if ($error instanceof NotaAgilApiException && is_array($error->payload)) {
             $details = data_get($error->payload, 'errors')
+                ?: data_get($error->payload, 'erros')
                 ?: data_get($error->payload, 'message')
+                ?: data_get($error->payload, 'mensagem')
+                ?: data_get($error->payload, 'descricao')
                 ?: data_get($error->payload, 'error');
 
             if (is_array($details)) {
@@ -420,12 +717,11 @@ class NotaAgilFiscalService
             ->all();
         $items = $this->aggregateFiscalItems($items);
         $metadata = $this->withIbptMetadata($config, $items, [
-            'origin' => 'pdv',
-            'operator_id' => $operatorId,
-            'fiscal_observation' => data_get($checkoutPayload, 'complementary.fiscal_observation')
+            'origem' => 'pdv',
+            'operador_id' => $operatorId,
+            'observacao_fiscal' => data_get($checkoutPayload, 'complementary.fiscal_observation')
                 ?: data_get($checkoutPayload, 'complementary.observacao_nota'),
-            'payments' => $checkoutPayload['payments'] ?? [],
-            'restaurant' => [
+            'restaurante' => [
                 'ficha_id' => data_get($checkoutPayload, 'complementary.restaurant_ficha_id'),
                 'ficha_code' => data_get($checkoutPayload, 'complementary.restaurant_ficha_code'),
                 'table_id' => data_get($checkoutPayload, 'complementary.restaurant_table_id'),
@@ -455,7 +751,8 @@ class NotaAgilFiscalService
             'items.catalogProduct.fiscalItemProfileSaida',
             'items.catalogProduct.unidadeMedida',
             'items.catalogProduct.codigosBarras',
-            'payments',
+            'items.catalogProduct.fiscalTags',
+            'payments.paymentMethod',
         ]);
 
         $items = $sale->items
@@ -463,17 +760,39 @@ class NotaAgilFiscalService
             ->values()
             ->all();
         $items = $this->aggregateFiscalItems($items);
-        $metadata = $this->withIbptMetadata($config, $items, [
-            'origin' => 'pdv',
-            'sale_id' => $sale->id,
-            'sale_number' => $sale->numero,
-            'operator_id' => $sale->created_by,
-            'payments' => $sale->payments->map(fn ($payment): array => [
-                'method_name' => $payment->metodo_nome,
-                'description' => $payment->descricao,
-                'amount' => (float) $payment->valor,
-            ])->values()->all(),
-        ]);
+        $pafMetadata = array_filter([
+            'dav_id' => $sale->paf_dav_id,
+            'pre_venda_id' => $sale->paf_pre_sale_id,
+            'requisicao_externa_id' => $sale->paf_external_requisition_id,
+        ], static fn ($value): bool => $value !== null && $value !== '');
+        $paymentMetadata = $sale->payments
+            ->map(fn ($payment): array => [
+                'meio' => $payment->metodo_nome,
+                'descricao' => $payment->descricao,
+                'valor' => (float) $payment->valor,
+                'intermediador_cnpj' => $payment->paymentMethod?->paf_intermediator_cnpj,
+                'identificador_estabelecimento' => $payment->paymentMethod?->paf_intermediator_identifier,
+                'tipo_documento_paf' => $payment->paf_document_type_code,
+            ])
+            ->filter(fn (array $payment): bool => $pafMetadata !== []
+                || trim((string) ($payment['intermediador_cnpj'] ?? '')) !== ''
+                || trim((string) ($payment['identificador_estabelecimento'] ?? '')) !== '')
+            ->values()
+            ->all();
+        $metadataPayload = [
+            'origem' => 'pdv',
+            'venda_id' => $sale->id,
+            'numero_venda' => $sale->numero,
+            'operador_id' => $sale->created_by,
+            'observacao_fiscal' => $sale->fiscal_observation,
+        ];
+        if ($paymentMetadata !== []) {
+            $metadataPayload['pagamentos'] = $paymentMetadata;
+        }
+        if ($pafMetadata !== []) {
+            $metadataPayload['paf'] = $pafMetadata;
+        }
+        $metadata = $this->withIbptMetadata($config, $items, $metadataPayload);
 
         return $this->envelope(
             externalId: $document->external_id,
@@ -501,14 +820,18 @@ class NotaAgilFiscalService
         array $items,
         array $metadata,
     ): array {
-        return [
+        $environment = $this->notagilEnvironment($config);
+        $municipality = trim((string) (CompanySetting::query()->first()?->cidade ?? ''));
+
+        return $this->operationPayload([
             'external_id' => $externalId,
             'document_type' => $documentType,
-            'metadata' => $metadata,
-            'snapshot' => [
-                'fiscal_environment' => (string) ($config->ambiente ?: 'homologacao'),
+            'municipio' => $municipality !== '' ? $municipality : null,
+            'metadados' => $metadata,
+            'retrato' => [
+                'fiscal_environment' => $environment,
                 'document_direction' => 'saida',
-                'reference_date' => $issuedAt->toDateString(),
+                'reference_date' => $issuedAt->toIso8601String(),
                 'document_data' => [
                     'serie' => $series,
                     'numero' => str_pad((string) $number, 6, '0', STR_PAD_LEFT),
@@ -516,11 +839,17 @@ class NotaAgilFiscalService
                     'natureza_operacao' => 'Venda de mercadoria',
                     'valor_total' => round($total, 2),
                 ],
-                'counterparty' => $counterparty,
+                'counterparty' => $this->normalizeOperationCounterparty($counterparty),
                 'document_references' => [],
-                'items' => $items,
+                'items' => $this->normalizeOperationItems($items),
             ],
-        ];
+        ], $this->shouldSubmitSynchronouslyForType($documentType, $config));
+    }
+
+    private function shouldSubmitSynchronouslyForType(string $documentType, ?FiscalConfig $config): bool
+    {
+        return (bool) ($config?->notagil_nfce_synchronous ?? false)
+            && mb_strtolower($documentType) === 'nfce';
     }
 
     private function mapInputItem(array $item): array
@@ -572,17 +901,24 @@ class NotaAgilFiscalService
         $profile = $saidaProfile ?: $defaultProfile;
         $attributes = is_array($product?->atributos_logisticos) ? $product->atributos_logisticos : [];
         $legacyAttributes = is_array($legacyProduct?->restaurant_config) ? $legacyProduct->restaurant_config : [];
-        $ncm = $this->resolveItemNcm($saidaProfile?->ncm, $defaultProfile?->ncm, data_get($attributes, 'fiscal_ncm'), $legacyAttributes);
+        $isService = $this->isServiceFiscalItem($product);
+        $ncm = $isService ? null : $this->resolveItemNcm($product?->ncm, $saidaProfile?->ncm, $defaultProfile?->ncm, data_get($attributes, 'fiscal_ncm'), $legacyAttributes);
+        $fiscalTags = $product && $product->relationLoaded('fiscalTags')
+            ? $product->fiscalTags->pluck('tag')->values()->all()
+            : [];
 
         return array_filter([
             'product_id' => data_get($attributes, 'notagil_product_id'),
-            'external_product_id' => $productId ? (string) $productId : ($legacyProduct?->id ? (string) $legacyProduct->id : null),
             'sku' => trim($sku) ?: null,
             'description' => trim($description) ?: 'Produto',
+            'item_type' => $isService ? 'service' : 'product',
             'ncm' => $ncm,
-            'cest' => $profile?->cest ? preg_replace('/\D+/', '', (string) $profile->cest) : null,
-            'origin_code' => (string) ($profile?->origem_mercadoria ?: data_get($attributes, 'fiscal_origem', '0')),
-            'tax_classification_code' => $profile?->cod_classe_tributo ?: data_get($attributes, 'fiscal_tax_classification_code'),
+            'cest' => $isService ? null : $this->digitsOrNull($this->firstFilled([$product?->cest, $profile?->cest])),
+            'origin_code' => $isService ? null : (string) $this->firstFilled([$product?->origem_mercadoria, $profile?->origem_mercadoria, data_get($attributes, 'fiscal_origem', '0')]),
+            'service_code' => $isService ? $this->firstFilled([$product?->servico_codigo, $profile?->servico_codigo]) : null,
+            'codigo_nbs' => $isService ? $product?->codigo_nbs : null,
+            'fiscal_tags' => $fiscalTags ?: null,
+            'tax_classification_code' => $this->firstFilled([$product?->cod_classe_tributo, $profile?->cod_classe_tributo, data_get($attributes, 'fiscal_tax_classification_code')]),
             'unit' => $this->resolveFiscalUnit($product, $fallbackUnit),
             'quantity' => $quantity,
             'unit_price' => $unitPrice,
@@ -676,6 +1012,10 @@ class NotaAgilFiscalService
      */
     private function withIbptMetadata(FiscalConfig $config, array $items, array $metadata): array
     {
+        if (! $this->ibptLookupEnabled()) {
+            return $metadata;
+        }
+
         try {
             $request = $this->buildIbptCupomRequest($config, $items);
 
@@ -694,7 +1034,7 @@ class NotaAgilFiscalService
                 ]);
             }
 
-            if (count($request['payload']['items'] ?? []) === 0) {
+            if (count($request['payload']['itens'] ?? []) === 0) {
                 return $this->handleIbptIssue($config, $metadata, 'Nenhum item fiscal elegível para consulta IBPT.');
             }
 
@@ -702,7 +1042,7 @@ class NotaAgilFiscalService
                 $this->resolveIbptCupom($config, $request['payload']),
             );
 
-            if (! $this->ibptResponseCoversRequest($ibpt, count($request['payload']['items']))) {
+            if (! $this->ibptResponseCoversRequest($ibpt, count($request['payload']['itens']))) {
                 return $this->handleIbptIssue($config, $metadata, 'Resposta IBPT incompleta para os itens fiscais do cupom.');
             }
 
@@ -711,11 +1051,13 @@ class NotaAgilFiscalService
                 return $this->handleIbptIssue($config, $metadata, 'Resposta IBPT sem totais tributários para o cupom.');
             }
 
+            $currentObservation = $metadata['observacao_fiscal'] ?? $metadata['fiscal_observation'] ?? null;
+
             return [
                 ...$metadata,
-                'fiscal_observation' => $this->appendFiscalObservation($metadata['fiscal_observation'] ?? null, $message),
+                'observacao_fiscal' => $this->appendFiscalObservation($currentObservation, $message),
                 'ibpt' => $ibpt,
-                'ibpt_message' => $message,
+                'mensagem_ibpt' => $message,
             ];
         } catch (Throwable $error) {
             if ($this->isProductionEnvironment($config)) {
@@ -732,7 +1074,7 @@ class NotaAgilFiscalService
 
     /**
      * @param  array<int, array<string, mixed>>  $items
-     * @return array{payload: array{uf: string, items: array<int, array<string, mixed>>}, missing_count: int, missing_indexes: array<int, int>}
+     * @return array{payload: array{uf: string, itens: array<int, array<string, mixed>>}, missing_count: int, missing_indexes: array<int, int>}
      */
     private function buildIbptCupomRequest(FiscalConfig $config, array $items): array
     {
@@ -748,17 +1090,21 @@ class NotaAgilFiscalService
             }
 
             $originCode = trim((string) ($item['origin_code'] ?? ''));
-            $payloadItem = [
+            $payloadItem = $this->filterBlank([
                 'ncm' => $ncm,
-                'value' => $this->ibptItemValue($item),
-            ];
+                'valor' => $this->ibptItemValue($item),
+                'descricao' => $item['description'] ?? null,
+                'unidade' => $item['unit'] ?? null,
+                'codigo_interno' => $item['sku'] ?? $item['external_product_id'] ?? null,
+            ]);
 
             if ($originCode !== '') {
-                $payloadItem['origin_code'] = $originCode;
+                $payloadItem['codigo_origem'] = $originCode;
             }
 
             if ($this->isImportedOrigin($originCode)) {
-                $payloadItem['imported'] = true;
+                $payloadItem['importado'] = true;
+                $payloadItem['tipo_mercadoria'] = 'importada';
             }
 
             $payloadItems[] = $payloadItem;
@@ -767,7 +1113,7 @@ class NotaAgilFiscalService
         return [
             'payload' => [
                 'uf' => $this->resolveIbptUf($config),
-                'items' => $payloadItems,
+                'itens' => $payloadItems,
             ],
             'missing_count' => count($missingIndexes),
             'missing_indexes' => $missingIndexes,
@@ -783,29 +1129,7 @@ class NotaAgilFiscalService
             throw new NotaAgilConfigurationException('Configure o token NotaAgil antes de consultar IBPT.');
         }
 
-        $companyId = $this->requireCompanyId($config);
-        $url = $this->baseUrl($config).'/empresas/'.rawurlencode($companyId).'/fiscal/utilitarios/ibpt/cupom';
-
-        try {
-            $response = (new Client(['timeout' => max(1, (int) config('pdv.notagil.timeout', 30))]))
-                ->request('POST', $url, [
-                    'headers' => [
-                        'Accept' => 'application/json',
-                        'Authorization' => 'Bearer '.$this->token($config),
-                    ],
-                    'json' => $payload,
-                ]);
-        } catch (RequestException $exception) {
-            $response = $exception->getResponse();
-            $body = $response ? (string) $response->getBody() : '';
-            $decoded = $this->decodeJsonPayload($body) ?: ['message' => $exception->getMessage()];
-
-            throw new NotaAgilApiException($response?->getStatusCode() ?? 0, $decoded, data_get($decoded, 'errors'));
-        }
-
-        $decoded = $this->decodeJsonPayload((string) $response->getBody());
-
-        return is_array($decoded) ? $decoded : [];
+        return $this->client($config)->consultIbptCouponV2($payload);
     }
 
     /**
@@ -981,6 +1305,42 @@ class NotaAgilFiscalService
         return in_array($environment, ['producao', 'production', 'prod'], true);
     }
 
+    private function notagilEnvironment(?FiscalConfig $config, bool $allowAll = false): string
+    {
+        $environment = strtr(mb_strtolower(trim((string) ($config?->ambiente ?? ''))), [
+            'ç' => 'c',
+            'ã' => 'a',
+            'á' => 'a',
+            'à' => 'a',
+            'â' => 'a',
+            'é' => 'e',
+            'ê' => 'e',
+            'í' => 'i',
+            'ó' => 'o',
+            'ô' => 'o',
+            'ú' => 'u',
+        ]);
+
+        if (in_array($environment, ['producao', 'production', 'prod'], true)) {
+            return 'producao';
+        }
+
+        if ($allowAll && in_array($environment, ['', 'todos', 'all'], true)) {
+            return 'todos';
+        }
+
+        return 'homologacao';
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function filterBlank(array $payload): array
+    {
+        return array_filter($payload, static fn ($value): bool => $value !== null && $value !== '');
+    }
+
     private function isImportedOrigin(string $originCode): bool
     {
         return in_array($originCode, ['1', '2', '3', '6', '7', '8'], true);
@@ -1003,17 +1363,6 @@ class NotaAgilFiscalService
         return number_format($value, 2, ',', '.');
     }
 
-    private function decodeJsonPayload(string $body): mixed
-    {
-        if ($body === '') {
-            return null;
-        }
-
-        $decoded = json_decode($body, true);
-
-        return json_last_error() === JSON_ERROR_NONE ? $decoded : ['raw' => $body];
-    }
-
     /**
      * @param  array<string, mixed>  $item
      */
@@ -1032,9 +1381,10 @@ class NotaAgilFiscalService
         return hash('sha256', json_encode($comparable, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: serialize($comparable));
     }
 
-    private function resolveItemNcm(mixed $saidaProfileNcm, mixed $defaultProfileNcm, mixed $attributeNcm, array $legacyAttributes): ?string
+    private function resolveItemNcm(mixed $productNcm, mixed $saidaProfileNcm, mixed $defaultProfileNcm, mixed $attributeNcm, array $legacyAttributes): ?string
     {
         foreach ([
+            $productNcm,
             $saidaProfileNcm,
             $defaultProfileNcm,
             $attributeNcm,
@@ -1048,6 +1398,17 @@ class NotaAgilFiscalService
         }
 
         return null;
+    }
+
+    private function isServiceFiscalItem(?Produto $product): bool
+    {
+        if (! $product) {
+            return false;
+        }
+
+        return mb_strtoupper(trim((string) $product->produto_tipo)) === 'SERVICO'
+            || trim((string) $product->tipo_item) === '09'
+            || mb_strtoupper(trim((string) $product->natureza_item)) === 'SERVICO';
     }
 
     private function digitsOrNull(mixed $value): ?string
@@ -1075,10 +1436,12 @@ class NotaAgilFiscalService
     private function resolveCatalogProduct(mixed $id): ?Produto
     {
         $id = trim((string) $id);
-        if ($id === '') return null;
+        if ($id === '') {
+            return null;
+        }
 
         return Produto::query()
-            ->with(['fiscalItemProfile', 'fiscalItemProfileSaida', 'unidadeMedida', 'codigosBarras'])
+            ->with(['fiscalItemProfile', 'fiscalItemProfileSaida', 'unidadeMedida', 'codigosBarras', 'fiscalTags'])
             ->find($id);
     }
 
@@ -1170,6 +1533,7 @@ class NotaAgilFiscalService
 
     private function applyRemoteResponse(SaleFiscalDocument $document, array $response): SaleFiscalDocument
     {
+        $response = NotaAgilClient::normalizeDocumentResponse($response);
         $fiscalStatus = (string) data_get($response, 'fiscal_status', data_get($response, 'status_fiscal', data_get($response, 'status', '')));
         $operationalStatus = (string) data_get($response, 'operational_status', data_get($response, 'status_operacional', data_get($response, 'notagil_event_type', '')));
         $webhookType = (string) data_get($response, 'webhook_type', data_get($response, 'type', ''));
@@ -1180,7 +1544,7 @@ class NotaAgilFiscalService
             'status' => $status,
             'fiscal_status' => $fiscalStatus ?: $document->fiscal_status,
             'operational_status' => $operationalStatus ?: $document->operational_status,
-            'access_key' => data_get($response, 'access_key', data_get($response, 'document_key', data_get($response, 'chave_acesso', $document->access_key))),
+            'access_key' => data_get($response, 'access_key', data_get($response, 'document_key', data_get($response, 'chave_documento', data_get($response, 'chave_acesso', $document->access_key)))),
             'protocol' => data_get($response, 'protocol', data_get($response, 'protocolo', $document->protocol)),
             'authorized_at' => $this->resolveAuthorizedAt($response, $status) ?: $document->authorized_at,
             'response_payload' => $response,
@@ -1193,6 +1557,20 @@ class NotaAgilFiscalService
 
     private function resolveWebhookDocumentPayload(array $payload): array
     {
+        $v2Document = data_get($payload, 'dados.documento')
+            ?: data_get($payload, 'dados.document')
+            ?: data_get($payload, 'documento');
+        if (is_array($v2Document)) {
+            return array_filter([
+                ...$v2Document,
+                'webhook_id' => data_get($payload, 'id') ?: data_get($payload, 'notificacao_web_id'),
+                'webhook_type' => $this->resolveWebhookType($payload),
+                'notagil_event_id' => data_get($payload, 'dados.evento.id') ?: data_get($payload, 'evento.id'),
+                'notagil_event_type' => data_get($payload, 'nome_evento') ?: data_get($payload, 'dados.evento.nome_evento'),
+                'notagil_event_occurred_at' => data_get($payload, 'criado_em') ?: data_get($payload, 'dados.evento.ocorrido_em'),
+            ], static fn ($value): bool => $value !== null && $value !== '');
+        }
+
         $document = data_get($payload, 'data.document');
         if (is_array($document)) {
             $eventType = $this->resolveWebhookType($payload);
@@ -1238,6 +1616,8 @@ class NotaAgilFiscalService
     private function resolveWebhookType(array $payload): string
     {
         return mb_strtolower(trim((string) $this->firstFilled([
+            data_get($payload, 'nome_evento'),
+            data_get($payload, 'dados.evento.nome_evento'),
             data_get($payload, 'type'),
             data_get($payload, 'event.type'),
             data_get($payload, 'event'),
@@ -1281,14 +1661,18 @@ class NotaAgilFiscalService
 
         if (
             in_array($event, ['fiscal_document.rejected'], true)
-            || in_array($fiscal, ['rejected', 'rejeitada', 'denied', 'denegada'], true)
-        ) return SaleFiscalDocument::STATUS_REJECTED;
+            || in_array($fiscal, ['rejected', 'rejeitada', 'rejeitado', 'denied', 'denegada', 'denegado'], true)
+        ) {
+            return SaleFiscalDocument::STATUS_REJECTED;
+        }
 
         if (
             in_array($event, ['fiscal_document.cancelled'], true)
             || in_array($fiscal, ['cancelled', 'canceled', 'cancelada', 'cancelado'], true)
             || in_array($operational, ['cancelled', 'canceled', 'cancelada', 'cancelado'], true)
-        ) return SaleFiscalDocument::STATUS_CANCELLED;
+        ) {
+            return SaleFiscalDocument::STATUS_CANCELLED;
+        }
 
         if (
             in_array($event, ['fiscal_document.corrected'], true)
@@ -1303,14 +1687,18 @@ class NotaAgilFiscalService
 
         if (
             in_array($event, ['fiscal_document.failed'], true)
-            || in_array($operational, ['failed', 'retry_exhausted'], true)
-        ) return SaleFiscalDocument::STATUS_CONTINGENCY_PENDING;
+            || in_array($operational, ['failed', 'falhou', 'retry_exhausted', 'tentativas_esgotadas'], true)
+        ) {
+            return SaleFiscalDocument::STATUS_CONTINGENCY_PENDING;
+        }
 
         if (
-            in_array($event, ['fiscal_document.authorized'], true)
+            in_array($event, ['fiscal_document.authorized', 'nota_emitida'], true)
             || in_array($fiscal, ['authorized', 'autorizada', 'autorizado'], true)
-            || in_array($operational, ['completed'], true)
-        ) return SaleFiscalDocument::STATUS_AUTHORIZED;
+            || in_array($operational, ['completed', 'concluido', 'concluida', 'nota_emitida'], true)
+        ) {
+            return SaleFiscalDocument::STATUS_AUTHORIZED;
+        }
 
         return SaleFiscalDocument::STATUS_PROCESSING;
     }
@@ -1319,8 +1707,11 @@ class NotaAgilFiscalService
     {
         $value = data_get($response, 'authorized_at')
             ?: data_get($response, 'autorizado_em')
+            ?: data_get($response, 'autorizada_em')
             ?: data_get($response, 'notagil_event_occurred_at');
-        if ($value) return Carbon::parse($value);
+        if ($value) {
+            return Carbon::parse($value);
+        }
 
         return $status === SaleFiscalDocument::STATUS_AUTHORIZED ? now() : null;
     }
@@ -1333,8 +1724,12 @@ class NotaAgilFiscalService
 
         $message = $this->firstFilled([
             data_get($response, 'rejection_reason'),
+            data_get($response, 'motivo_rejeicao'),
             data_get($response, 'last_error'),
+            data_get($response, 'ultimo_erro'),
             data_get($response, 'message'),
+            data_get($response, 'mensagem'),
+            data_get($response, 'descricao'),
             data_get($response, 'error'),
             $currentError,
         ]);
@@ -1366,7 +1761,10 @@ class NotaAgilFiscalService
 
     private function normalizeWebhookResponse(array $response, array $fallback): array
     {
-        $endpoint = data_get($response, 'data');
+        $endpoint = data_get($response, 'dados');
+        if (! is_array($endpoint)) {
+            $endpoint = data_get($response, 'data');
+        }
         if (! is_array($endpoint)) {
             $endpoint = data_get($response, 'webhook');
         }
@@ -1374,21 +1772,31 @@ class NotaAgilFiscalService
             $endpoint = $response;
         }
 
-        $events = data_get($endpoint, 'events', data_get($fallback, 'events', self::WEBHOOK_EVENTS));
+        $events = data_get($endpoint, 'eventos', data_get($endpoint, 'events', data_get($fallback, 'eventos', data_get($fallback, 'events', self::WEBHOOK_EVENTS))));
+        $status = (string) data_get($endpoint, 'situacao', data_get($endpoint, 'status', data_get($fallback, 'situacao', data_get($fallback, 'status', 'ativo'))));
 
         return [
             'id' => (string) data_get($endpoint, 'id', data_get($fallback, 'id', '')),
             'url' => (string) data_get($endpoint, 'url', data_get($fallback, 'url')),
-            'status' => (string) data_get($endpoint, 'status', data_get($fallback, 'status', 'active')),
-            'environment' => data_get($endpoint, 'environment', data_get($fallback, 'environment')),
+            'status' => $status === 'ativo' ? 'active' : ($status === 'pausado' ? 'paused' : $status),
+            'environment' => data_get($endpoint, 'ambiente', data_get($endpoint, 'environment', data_get($fallback, 'ambiente', data_get($fallback, 'environment')))),
             'events' => is_array($events) ? array_values($events) : self::WEBHOOK_EVENTS,
-            'secret' => (string) data_get($endpoint, 'secret', data_get($response, 'secret', '')),
+            'secret' => (string) data_get($endpoint, 'segredo', data_get($endpoint, 'secret', data_get($response, 'segredo', data_get($response, 'secret', '')))),
         ];
     }
 
     private function token(?FiscalConfig $config = null): string
     {
         return trim((string) ($config?->notagil_token ?: config('pdv.notagil.token')));
+    }
+
+    private function ibptLookupEnabled(): bool
+    {
+        try {
+            return (bool) config('pdv.notagil.ibpt_lookup_enabled', false);
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     protected function client(?FiscalConfig $config = null): NotaAgilClient
@@ -1402,14 +1810,11 @@ class NotaAgilFiscalService
 
     private function baseUrl(?FiscalConfig $config = null): string
     {
-        $baseUrl = rtrim((string) ($config?->notagil_base_url ?: config('pdv.notagil.base_url', 'https://api.notagil.com.br/api/v1/integrations')), '/');
+        $baseUrl = rtrim((string) ($config?->notagil_base_url ?: config('pdv.notagil.base_url', 'https://notagil_api.vora-sys.com/api/v2/integrations')), '/');
         $path = trim((string) parse_url($baseUrl, PHP_URL_PATH), '/');
 
-        return $path === '' ? $baseUrl.'/api/v1/integrations' : $baseUrl;
+        return $path === '' ? $baseUrl.'/api/v2/integrations' : $baseUrl;
     }
-
 }
 
-class NotaAgilConfigurationException extends \RuntimeException
-{
-}
+class NotaAgilConfigurationException extends \RuntimeException {}

@@ -80,6 +80,8 @@ class PaymentMethodsController extends Controller
             'permite_multiplos_pagamentos' => ['required', 'boolean'],
             'parcelas_min' => ['nullable', 'integer', 'min:1'],
             'sem_juros_ate' => ['nullable', 'integer', 'min:0'],
+            'paf_intermediator_cnpj' => ['nullable', 'string', 'max:20'],
+            'paf_intermediator_identifier' => ['nullable', 'string', 'max:80'],
         ]);
     }
 }

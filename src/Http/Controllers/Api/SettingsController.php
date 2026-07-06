@@ -12,6 +12,9 @@ use Freeline\Pdv\Services\NotaAgilConfigurationException;
 use Freeline\Pdv\Services\NotaAgilFiscalService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Throwable;
 
@@ -21,8 +24,7 @@ class SettingsController extends Controller
         private readonly CompanyContextResolver $companyContext,
         private readonly FiscalConfigProvider $fiscalConfig,
         private readonly NotaAgilFiscalService $notaAgil,
-    ) {
-    }
+    ) {}
 
     public function company(): JsonResponse
     {
@@ -69,7 +71,7 @@ class SettingsController extends Controller
             'pdv_layout_mode' => ['nullable', Rule::in(['varejo', 'restaurante', 'servicos'])],
         ]);
 
-        $record = CompanySetting::query()->first() ?? new CompanySetting();
+        $record = CompanySetting::query()->first() ?? new CompanySetting;
         if (blank($payload['pdv_layout_mode'] ?? null)) {
             $payload['pdv_layout_mode'] = $record->pdv_layout_mode ?: 'varejo';
         }
@@ -95,7 +97,7 @@ class SettingsController extends Controller
 
         $payload = $this->validateFiscalPayload($request);
 
-        $record = FiscalConfig::query()->first() ?? new FiscalConfig();
+        $record = FiscalConfig::query()->first() ?? new FiscalConfig;
         if (array_key_exists('notagil_base_url', $payload)) {
             $payload['notagil_base_url'] = filled($payload['notagil_base_url'])
                 ? rtrim((string) $payload['notagil_base_url'], '/')
@@ -141,7 +143,7 @@ class SettingsController extends Controller
             $payload['notagil_webhook_url'] = $this->defaultNotagilWebhookUrl();
         }
 
-        $record = FiscalConfig::query()->first() ?? new FiscalConfig();
+        $record = FiscalConfig::query()->first() ?? new FiscalConfig;
         $record->fill($payload)->save();
 
         try {
@@ -207,7 +209,7 @@ class SettingsController extends Controller
             $payload['notagil_webhook_url'] = $this->defaultNotagilWebhookUrl();
         }
 
-        $record = FiscalConfig::query()->first() ?? new FiscalConfig();
+        $record = FiscalConfig::query()->first() ?? new FiscalConfig;
         $record->fill($payload)->save();
 
         try {
@@ -285,9 +287,35 @@ class SettingsController extends Controller
             'validade' => ['nullable', 'date'],
             'arquivo_nome' => ['nullable', 'string', 'max:255'],
             'senha_hash' => ['nullable', 'string', 'max:255'],
+            'senha' => ['nullable', 'string', 'max:255'],
+            'arquivo_base64' => ['nullable', 'string'],
+            'pfx_base64' => ['nullable', 'string'],
         ]);
 
-        $record = DigitalCertificate::query()->first() ?? new DigitalCertificate();
+        $record = DigitalCertificate::query()->first() ?? new DigitalCertificate;
+        $pfxBase64 = $payload['pfx_base64'] ?? $payload['arquivo_base64'] ?? null;
+        unset($payload['pfx_base64'], $payload['arquivo_base64'], $payload['senha']);
+
+        if ($pfxBase64) {
+            $binary = base64_decode((string) preg_replace('/^data:[^;]+;base64,/', '', $pfxBase64), true);
+            if ($binary === false) {
+                return response()->json(['message' => 'Arquivo PFX inválido.'], 422);
+            }
+
+            $filename = 'certificates/'.(string) Str::uuid().'.pfx';
+            Storage::disk('local')->put($filename, $binary);
+            $payload['pfx_storage_path'] = $filename;
+            $payload['pfx_uploaded_at'] = now();
+        }
+
+        $password = trim((string) ($request->input('senha') ?: $request->input('senha_hash')));
+        if ($password !== '') {
+            $payload['pfx_password_encrypted'] = Crypt::encryptString($password);
+            $payload['senha_hash'] = null;
+        } else {
+            unset($payload['senha_hash']);
+        }
+
         $record->fill($payload)->save();
 
         return response()->json($record);
@@ -322,13 +350,19 @@ class SettingsController extends Controller
             ?: config('pdv.notagil.webhook_url')
             ?: url('/api/pdv/webhooks/notagil');
         $payload['notagil_base_url'] = data_get($payload, 'notagil_base_url')
-            ?: config('pdv.notagil.base_url', 'https://api.notagil.com.br/api/v1/integrations');
+            ?: config('pdv.notagil.base_url', 'https://notagil_api.vora-sys.com/api/v2/integrations');
         $payload['notagil_webhook_tolerance_seconds'] = data_get($payload, 'notagil_webhook_tolerance_seconds')
             ?? (int) config('pdv.notagil.webhook_tolerance_seconds', 300);
         $payload['notagil_token_configured'] = $dbToken !== '' || $envToken !== '';
         $payload['notagil_webhook_secret_configured'] = $dbSecret !== '' || $envSecret !== '';
         $payload['notagil_nfce_synchronous'] = (bool) data_get($payload, 'notagil_nfce_synchronous', false);
         $payload['layout_cupom'] = $this->normalizeCupomLayoutPayload(data_get($payload, 'layout_cupom'));
+        $payload['paf_enabled'] = data_get($payload, 'paf_enabled', false);
+        $payload['paf_app_name'] = data_get($payload, 'paf_app_name') ?: config('app.name', 'Freeline PDV');
+        $payload['paf_app_version'] = data_get($payload, 'paf_app_version') ?: '1.0.0';
+        $payload['paf_database_architecture'] = data_get($payload, 'paf_database_architecture') ?: 'Banco de dados na nuvem';
+        $payload['paf_system_architecture'] = data_get($payload, 'paf_system_architecture') ?: 'PAF-NFC-e Nuvem';
+        $payload['paf_fuel_module_enabled'] = (bool) data_get($payload, 'paf_fuel_module_enabled', false);
 
         return $payload;
     }
@@ -366,7 +400,7 @@ class SettingsController extends Controller
             'notagil_enabled' => ['nullable', 'boolean'],
             'notagil_base_url' => ['nullable', 'url:http,https', 'max:2048'],
             'notagil_token' => ['nullable', 'string', 'max:2048'],
-            'notagil_company_id' => [Rule::requiredIf($request->boolean('notagil_enabled')), 'nullable', 'string', 'max:80'],
+            'notagil_company_id' => ['nullable', 'string', 'max:80'],
             'notagil_operation_code_nfce' => ['nullable', 'string', 'max:80'],
             'notagil_nfce_synchronous' => ['nullable', 'boolean'],
             'notagil_operation_code_nfe' => ['nullable', 'string', 'max:80'],
@@ -375,6 +409,30 @@ class SettingsController extends Controller
             'notagil_webhook_tolerance_seconds' => ['nullable', 'integer', 'min:0', 'max:86400'],
             'logo_url' => ['nullable', 'string', 'max:3000000'],
             'layout_cupom' => ['nullable', 'array'],
+            'paf_enabled' => ['nullable', 'boolean'],
+            'paf_app_name' => ['nullable', 'string', 'max:255'],
+            'paf_app_version' => ['nullable', 'string', 'max:20'],
+            'paf_database_architecture' => ['nullable', Rule::in([
+                'Banco de dados local',
+                'Banco de dados interno',
+                'Banco de dados corporativo',
+                'Banco de dados na nuvem',
+            ])],
+            'paf_system_architecture' => ['nullable', Rule::in([
+                'PAF-NFC-e Local',
+                'PAF-NFC-e Interno',
+                'PAF-NFC-e Corporativo',
+                'PAF-NFC-e Nuvem',
+            ])],
+            'paf_cloud_provider' => ['nullable', 'string', 'max:255'],
+            'paf_fuel_module_enabled' => ['nullable', 'boolean'],
+            'paf_developer_cnpj' => ['nullable', 'string', 'max:20'],
+            'paf_developer_ie' => ['nullable', 'string', 'max:20'],
+            'paf_developer_im' => ['nullable', 'string', 'max:20'],
+            'paf_developer_razao_social' => ['nullable', 'string', 'max:255'],
+            'paf_developer_endereco' => ['nullable', 'string', 'max:255'],
+            'paf_developer_telefone' => ['nullable', 'string', 'max:40'],
+            'paf_developer_contato' => ['nullable', 'string', 'max:255'],
         ]);
     }
 

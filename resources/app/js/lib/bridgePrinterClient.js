@@ -1,4 +1,12 @@
 const textEncoder = new TextEncoder();
+const DEFAULT_PRINT_JOB_TIMEOUT_MS = 60000;
+const PRINT_JOB_POLL_INTERVAL_MS = 500;
+
+function delay(ms) {
+    return new Promise((resolve) => {
+        globalThis.setTimeout(resolve, ms);
+    });
+}
 
 function encodeBase64(bytes) {
     if (!bytes) return '';
@@ -30,6 +38,17 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 2000) {
     } finally {
         clearTimeout(timeout);
     }
+}
+
+async function responseErrorMessage(response, fallbackMessage) {
+    const data = await response.json().catch(() => ({}));
+    const detail = data?.detail;
+
+    if (Array.isArray(detail)) {
+        return detail.map((item) => item?.msg || item?.message || JSON.stringify(item)).join(' ');
+    }
+
+    return String(data?.message || detail || fallbackMessage);
 }
 
 function normalizeBaseUrl(value) {
@@ -157,11 +176,11 @@ class BridgePrinterClient {
             }, 15000);
 
             if (!response.ok) {
-                const data = await response.json().catch(() => ({}));
-                const message = String(data?.message || `Bridge retornou erro HTTP ${response.status}.`);
-                throw new Error(message);
+                throw new Error(await responseErrorMessage(response, `Bridge retornou erro HTTP ${response.status}.`));
             }
 
+            const data = await response.json().catch(() => ({}));
+            await this.waitForPrintJob(data?.job_id, DEFAULT_PRINT_JOB_TIMEOUT_MS);
             this.setState({ status: 'connected', lastError: null });
         } catch (error) {
             this.setState({
@@ -170,6 +189,49 @@ class BridgePrinterClient {
             });
             throw error;
         }
+    }
+
+    async waitForPrintJob(jobId, timeoutMs = DEFAULT_PRINT_JOB_TIMEOUT_MS) {
+        const normalizedJobId = String(jobId || '').trim();
+        if (!normalizedJobId) {
+            throw new Error('Bridge não retornou o identificador do job de impressão.');
+        }
+
+        const deadline = Date.now() + Math.max(1, Number(timeoutMs || DEFAULT_PRINT_JOB_TIMEOUT_MS));
+        let lastMessage = 'Aguardando confirmação do bridge.';
+
+        while (Date.now() <= deadline) {
+            const response = await fetchWithTimeout(
+                this.buildUrl(`/v1/printers/${encodeURIComponent(this.bridgeDeviceId)}/jobs/${encodeURIComponent(normalizedJobId)}`),
+                { method: 'GET' },
+                2500,
+            );
+
+            if (!response.ok) {
+                throw new Error(await responseErrorMessage(response, `Bridge retornou erro HTTP ${response.status} ao consultar o job.`));
+            }
+
+            const data = await response.json().catch(() => ({}));
+            const status = String(data?.status || '').trim().toLowerCase();
+            lastMessage = String(data?.message || lastMessage);
+
+            if (status === 'printed') {
+                return data;
+            }
+
+            if (status === 'failed') {
+                throw new Error(lastMessage || 'Bridge falhou ao imprimir.');
+            }
+
+            const remainingMs = deadline - Date.now();
+            if (remainingMs <= 0) {
+                break;
+            }
+
+            await delay(Math.min(PRINT_JOB_POLL_INTERVAL_MS, remainingMs));
+        }
+
+        throw new Error(`Tempo limite aguardando confirmação do bridge: ${lastMessage}`);
     }
 
     async printTestPage() {

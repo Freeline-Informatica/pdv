@@ -30,6 +30,7 @@ class SalePayment extends Model
         'acquirer_fee_amount',
         'expected_net_amount',
         'expected_receipt_days',
+        'paf_document_type_code',
     ];
 
     protected $casts = [
@@ -45,5 +46,10 @@ class SalePayment extends Model
     public function sale(): BelongsTo
     {
         return $this->belongsTo(Sale::class, 'sale_id');
+    }
+
+    public function paymentMethod(): BelongsTo
+    {
+        return $this->belongsTo(PaymentMethod::class, 'payment_method_id');
     }
 }

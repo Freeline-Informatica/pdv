@@ -16,7 +16,7 @@ migrations pelo `Freeline\Pdv\PdvServiceProvider`.
 No diretorio raiz do SimplesLaravel, instale ou atualize o pacote:
 
 ```bash
-composer require freeline/pdv:^0.2.2 notagil/integration-sdk:0.3.2 -W
+composer require freeline/pdv:^0.2.3 notagil/integration-sdk:^0.4.3 -W
 ```
 
 Se o Composer ainda nao conhecer o repositorio do pacote, registre o repositorio
@@ -24,7 +24,7 @@ VCS antes do `require`:
 
 ```bash
 composer config repositories.freeline-pdv vcs https://github.com/Freeline-Informatica/pdv
-composer require freeline/pdv:^0.2.2 notagil/integration-sdk:0.3.2 -W
+composer require freeline/pdv:^0.2.3 notagil/integration-sdk:^0.4.3 -W
 ```
 
 Depois limpe caches e confirme a descoberta do provider:

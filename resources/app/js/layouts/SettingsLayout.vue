@@ -131,6 +131,12 @@ const navigationSectionsBase = [
                 icon: 'wallet-cards',
             },
             {
+                path: '/configuracoes/menu-fiscal',
+                label: 'Menu Fiscal',
+                description: 'Arquivos PAF-NFC-e',
+                icon: 'scroll-text',
+            },
+            {
                 path: '/configuracoes/clientes',
                 label: 'Clientes',
                 description: 'Cadastro usado no checkout',

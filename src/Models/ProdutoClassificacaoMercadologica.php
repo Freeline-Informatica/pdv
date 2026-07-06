@@ -28,6 +28,9 @@ class ProdutoClassificacaoMercadologica extends Model
         'path',
         'ordem',
         'ativo',
+        'tipo_item_default',
+        'natureza_item_default',
+        'fiscal_tags_default',
     ];
 
     protected $casts = [
@@ -35,6 +38,7 @@ class ProdutoClassificacaoMercadologica extends Model
         'ordem' => 'integer',
         'ativo' => 'boolean',
         'parametros_observacoes' => 'array',
+        'fiscal_tags_default' => 'array',
     ];
 
     public function parent(): BelongsTo

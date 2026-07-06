@@ -1,5 +1,5 @@
 <script setup>
-import { FileText, Keyboard, LogOut, Menu, ReceiptText, Settings2, User, UserRoundCog, XCircle } from 'lucide-vue-next';
+import { FileText, Keyboard, LogOut, Menu, ReceiptText, ScrollText, Settings2, User, UserRoundCog, XCircle } from 'lucide-vue-next';
 import { computed } from 'vue';
 import AppBadge from '../ui/AppBadge.vue';
 
@@ -71,6 +71,12 @@ const utilityActions = [
         tone: 'default',
     },
     {
+        id: 'open-menu-fiscal',
+        label: 'Fiscal',
+        icon: ScrollText,
+        tone: 'default',
+    },
+    {
         id: 'open-settings',
         label: 'Config',
         icon: Settings2,
@@ -96,6 +102,7 @@ const emit = defineEmits([
     'identify-seller',
     'open-menu',
     'open-shortcuts',
+    'open-menu-fiscal',
     'open-settings',
     'logout',
 ]);

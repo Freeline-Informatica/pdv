@@ -2549,6 +2549,10 @@ async function openSettings() {
     openSettingsUnlockModal();
 }
 
+async function openMenuFiscal() {
+    await router.push('/menu-fiscal');
+}
+
 watch(
     () => route.query.unlockSettings,
     (needsUnlock) => {
@@ -2941,6 +2945,7 @@ onBeforeUnmount(() => {
                 @identify-seller="runPlannedShortcut('Identificar vendedor')"
                 @open-menu="openShortcuts"
                 @open-shortcuts="openShortcuts"
+                @open-menu-fiscal="openMenuFiscal"
                 @open-settings="openSettings"
                 @logout="logout"
             />

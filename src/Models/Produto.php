@@ -39,12 +39,27 @@ class Produto extends Model
         'palavra_chave',
         'permite_fracionamento',
         'atributos_logisticos',
+        'tipo_item',
+        'natureza_item',
+        'ncm',
+        'ncm_descricao',
+        'cest',
+        'origem_mercadoria',
+        'servico_codigo',
+        'codigo_nbs',
+        'cod_classe_tributo',
+        'ipi_classe',
+        'ipi_cod_enquadramento',
+        'ipi_selo_cod',
+        'cod_iat',
+        'cod_ippt',
     ];
 
     protected $casts = [
         'codigo_operacional_manual' => 'boolean',
         'permite_fracionamento' => 'boolean',
         'atributos_logisticos' => 'array',
+        'origem_mercadoria' => 'integer',
     ];
 
     public function unidadeMedida(): BelongsTo
@@ -70,6 +85,11 @@ class Produto extends Model
     public function fiscalItemProfileSaida(): BelongsTo
     {
         return $this->belongsTo(FiscalItemProfile::class, 'fiscal_item_profile_saida_id');
+    }
+
+    public function fiscalTags(): HasMany
+    {
+        return $this->hasMany(ProductFiscalTag::class, 'produto_id')->orderBy('tag');
     }
 
     public function precos(): HasMany

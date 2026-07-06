@@ -26,6 +26,7 @@ class StandaloneProductCatalogRepository implements ProductCatalogRepository
                 'estoque:id,produto_id,quantidade',
                 'codigosBarras:id,produto_id,codigo,principal,ativo',
                 'classificacaoMercadologica:id,parametros_observacoes',
+                'fiscalTags:id,produto_id,tag',
                 'fiscalItemProfile:id,display_name,ncm,cest,origem_mercadoria,cod_classe_tributo',
                 'fiscalItemProfileSaida:id,display_name,ncm,cest,origem_mercadoria,cod_classe_tributo',
                 'unidadeMedida:id,unidade,codigo_fiscal',
@@ -53,6 +54,7 @@ class StandaloneProductCatalogRepository implements ProductCatalogRepository
                 'estoque:id,produto_id,quantidade',
                 'codigosBarras:id,produto_id,codigo,principal,ativo',
                 'classificacaoMercadologica:id,parametros_observacoes',
+                'fiscalTags:id,produto_id,tag',
                 'fiscalItemProfile:id,display_name,ncm,cest,origem_mercadoria,cod_classe_tributo',
                 'fiscalItemProfileSaida:id,display_name,ncm,cest,origem_mercadoria,cod_classe_tributo',
                 'unidadeMedida:id,unidade,codigo_fiscal',
@@ -71,6 +73,7 @@ class StandaloneProductCatalogRepository implements ProductCatalogRepository
             ?? $produto->precos->first();
         $fiscalProfile = $produto->fiscalItemProfileSaida ?: $produto->fiscalItemProfile;
         $attributes = is_array($produto->atributos_logisticos) ? $produto->atributos_logisticos : [];
+        $isService = $this->isServiceProduct($produto);
 
         return [
             'id' => $produto->id,
@@ -87,14 +90,29 @@ class StandaloneProductCatalogRepository implements ProductCatalogRepository
             'unidade' => strtoupper((string) ($produto->unidadeMedida?->unidade ?: 'UN')),
             'permite_fracionamento' => (bool) $produto->permite_fracionamento,
             'produto_pesavel' => $this->isWeighableProduct($produto),
+            'produto_tipo' => $produto->produto_tipo,
+            'tipo_item' => $produto->tipo_item,
+            'natureza_item' => $produto->natureza_item,
+            'ncm' => $produto->ncm,
+            'cest' => $produto->cest,
+            'origem_mercadoria' => $produto->origem_mercadoria,
+            'servico_codigo' => $produto->servico_codigo,
+            'codigo_nbs' => $produto->codigo_nbs,
+            'fiscal_tags' => $produto->fiscalTags->pluck('tag')->values()->all(),
             'restaurant_config' => is_array($produto->atributos_logisticos) ? $produto->atributos_logisticos : null,
             'tributacao' => [
-                'document_model' => 'NFC-e',
+                'document_model' => $isService ? 'NFS-e' : 'NFC-e',
+                'item_type' => $isService ? 'SERVICE' : 'PRODUCT',
                 'profile' => $fiscalProfile?->display_name,
-                'ncm' => $fiscalProfile?->ncm ?: data_get($attributes, 'fiscal_ncm'),
-                'cest' => $fiscalProfile?->cest ?: data_get($attributes, 'fiscal_cest'),
-                'origem' => $fiscalProfile?->origem_mercadoria ?: data_get($attributes, 'fiscal_origem', '0'),
-                'tax_classification_code' => $fiscalProfile?->cod_classe_tributo ?: data_get($attributes, 'fiscal_tax_classification_code'),
+                'tipo_item' => $isService ? '09' : ($produto->tipo_item ?: '00'),
+                'natureza_item' => $isService ? 'SERVICO' : ($produto->natureza_item ?: 'MERCADORIA'),
+                'ncm' => $isService ? null : ($produto->ncm ?: $fiscalProfile?->ncm ?: data_get($attributes, 'fiscal_ncm')),
+                'cest' => $isService ? null : ($produto->cest ?: $fiscalProfile?->cest ?: data_get($attributes, 'fiscal_cest')),
+                'origem' => $isService ? null : ($produto->origem_mercadoria ?? $fiscalProfile?->origem_mercadoria ?? data_get($attributes, 'fiscal_origem', '0')),
+                'servico_codigo' => $isService ? ($produto->servico_codigo ?: $fiscalProfile?->servico_codigo) : null,
+                'codigo_nbs' => $isService ? $produto->codigo_nbs : null,
+                'fiscal_tags' => $produto->fiscalTags->pluck('tag')->values()->all(),
+                'tax_classification_code' => $produto->cod_classe_tributo ?: $fiscalProfile?->cod_classe_tributo ?: data_get($attributes, 'fiscal_tax_classification_code'),
                 'unidade_tributavel' => strtoupper((string) ($produto->unidadeMedida?->codigo_fiscal ?: $produto->unidadeMedida?->unidade ?: 'UN')),
             ],
             'classificacao_mercadologica_id' => $produto->classificacao_mercadologica_id,
@@ -115,6 +133,13 @@ class StandaloneProductCatalogRepository implements ProductCatalogRepository
         }
 
         return false;
+    }
+
+    private function isServiceProduct(Produto $produto): bool
+    {
+        return mb_strtoupper(trim((string) $produto->produto_tipo)) === 'SERVICO'
+            || trim((string) $produto->tipo_item) === '09'
+            || mb_strtoupper(trim((string) $produto->natureza_item)) === 'SERVICO';
     }
 
     private function resolveImageUrl(Produto $produto): ?string

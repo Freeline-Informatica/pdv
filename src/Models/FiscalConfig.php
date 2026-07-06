@@ -20,6 +20,11 @@ class FiscalConfig extends Model
         'notagil_webhook_url', 'notagil_webhook_secret', 'notagil_webhook_tolerance_seconds',
         'notagil_webhook_id', 'notagil_webhook_status', 'notagil_webhook_last_synced_at', 'notagil_webhook_last_error',
         'logo_url', 'layout_cupom',
+        'paf_enabled', 'paf_app_name', 'paf_app_version', 'paf_database_architecture',
+        'paf_system_architecture', 'paf_cloud_provider', 'paf_fuel_module_enabled',
+        'paf_developer_cnpj', 'paf_developer_ie', 'paf_developer_im',
+        'paf_developer_razao_social', 'paf_developer_endereco',
+        'paf_developer_telefone', 'paf_developer_contato',
     ];
 
     protected $casts = [
@@ -31,5 +36,7 @@ class FiscalConfig extends Model
         'notagil_webhook_tolerance_seconds' => 'integer',
         'notagil_webhook_last_synced_at' => 'datetime',
         'layout_cupom' => 'array',
+        'paf_enabled' => 'boolean',
+        'paf_fuel_module_enabled' => 'boolean',
     ];
 }

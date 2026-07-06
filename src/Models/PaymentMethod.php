@@ -17,7 +17,8 @@ class PaymentMethod extends Model
         'parcelas_max', 'parcela_minima', 'taxa_debito', 'taxa_credito_vista',
         'taxa_credito_parcelado', 'dias_recebimento', 'observacoes', 'ordem_pdv',
         'permite_troco', 'permite_parcelamento', 'permite_multiplos_pagamentos',
-        'parcelas_min', 'sem_juros_ate',
+        'parcelas_min', 'sem_juros_ate', 'paf_intermediator_cnpj',
+        'paf_intermediator_identifier',
     ];
 
     protected $casts = [
